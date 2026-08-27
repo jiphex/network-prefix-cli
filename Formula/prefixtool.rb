@@ -3,28 +3,28 @@
 class Prefixtool < Formula
   desc "Inspect, split and carve up IPv4 and IPv6 prefixes"
   homepage "https://github.com/jiphex/network-prefix-cli"
-  version "0.0.7"
+  version "0.0.8"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/jiphex/network-prefix-cli/releases/download/v0.0.7/prefixtool-v0.0.7-aarch64-apple-darwin.tar.gz"
-      sha256 "3c9269d76829d66c52787b6bd5928fe3c920e80be13f54d7973d9d381adc49b6"
+      url "https://github.com/jiphex/network-prefix-cli/releases/download/v0.0.8/prefixtool-v0.0.8-aarch64-apple-darwin.tar.gz"
+      sha256 "7556e1bb8495b8eb29646b363c88dd02c8626f3dbe540005d2b1aec012f44141"
     end
     on_intel do
-      url "https://github.com/jiphex/network-prefix-cli/releases/download/v0.0.7/prefixtool-v0.0.7-x86_64-apple-darwin.tar.gz"
-      sha256 "65e9c46ed2c6b09406637eed0b241a8a692c2742d5b14928be82311c969c9a10"
+      url "https://github.com/jiphex/network-prefix-cli/releases/download/v0.0.8/prefixtool-v0.0.8-x86_64-apple-darwin.tar.gz"
+      sha256 "722c4ff55b83f803512b2dd57357bca90133a71308d2b77c3b9c36507f527ab9"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/jiphex/network-prefix-cli/releases/download/v0.0.7/prefixtool-v0.0.7-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "42adbe52f1c96a959f5b09d3307b9d71da6bb8fd791c499b18fa2a4c50b3ccb3"
+      url "https://github.com/jiphex/network-prefix-cli/releases/download/v0.0.8/prefixtool-v0.0.8-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "0a8906a1fb79f438f7d3653bf765b6594d26eb9d4b8ce9ebf4031f552f81c931"
     end
     on_intel do
-      url "https://github.com/jiphex/network-prefix-cli/releases/download/v0.0.7/prefixtool-v0.0.7-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "2f4f57dc4593c5bcf95a12fbf8b8080712380d26e1c9fdbe10bde8dd54a007c7"
+      url "https://github.com/jiphex/network-prefix-cli/releases/download/v0.0.8/prefixtool-v0.0.8-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "d22191b81e0f1cc0147c704baefb3659918e797b232179d55dfc5fe094407df2"
     end
   end
 
