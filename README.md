@@ -121,7 +121,7 @@ $ prefixtool 2001::/64
   Expanded       2001:0000:0000:0000:0000:0000:0000:0000
   Prefix length  /64  (64 host bits)
   Addresses      2^64 (~1.8e19)
-  Holds          65,536 x /80   4,294,967,296 x /96   2^48 x /112
+  Holds          65,536 x /80 or 4,294,967,296 x /96 or 2^48 x /112
   Reverse DNS    0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2.ip6.arpa
   Ranges         within 2001::/32 - Teredo (RFC 4380)
                  within 2000::/3 - Global unicast (RFC 4291)

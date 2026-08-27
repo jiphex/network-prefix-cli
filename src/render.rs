@@ -90,7 +90,9 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                     .map(|c| format!("{} x /{len}", c.short()))
             })
             .collect();
-        field(w, o, "Holds", &parts.join("   "))?;
+        // Joined with "or": these are alternative ways to divide the same
+        // space, not things that fit alongside each other.
+        field(w, o, "Holds", &parts.join(&o.style.dim(" or ")))?;
     }
 
     match &i.reverse {
