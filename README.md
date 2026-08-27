@@ -173,6 +173,29 @@ Carve from 2001:db8::/52
     ...
 ```
 
+The map underneath shows the parent laid out block by block, with the
+allocations marked in place, so you can see where a carve landed rather than
+cross-referencing two lists by address:
+
+```
+$ prefixtool 2001:db8::/56 -2001:db8:0:cc::/64
+...
+Map of 2001:db8::/56
+     2001:db8::/57
+     2001:db8:0:80::/58
+     2001:db8:0:c0::/61
+     2001:db8:0:c8::/62
+  -> 2001:db8:0:cc::/64   carved
+     2001:db8:0:cd::/64
+     2001:db8:0:ce::/63
+     2001:db8:0:d0::/60
+     2001:db8:0:e0::/59
+```
+
+The allocations and the free blocks tile the parent exactly, so every address
+is accounted for on exactly one line. Long runs away from an allocation are
+elided into a line that still counts what it hid; `--all` shows everything.
+
 All carve operators in one invocation feed a single allocation run:
 
 - Fixed requests (`-10.0.8.0/22`) are placed first, because they have nowhere
