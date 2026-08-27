@@ -1,5 +1,7 @@
 # prefixtool
 
+[![CI](https://github.com/jiphex/network-prefix-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/jiphex/network-prefix-cli/actions/workflows/ci.yml)
+
 A single-binary CLI for inspecting, splitting and carving up IPv4 and IPv6
 prefixes. Built for the moment you are staring at an allocation and need to
 know how it divides, what fits inside it, and what is left over afterwards.
@@ -8,6 +10,22 @@ Two dependencies: [`ipnet`](https://crates.io/crates/ipnet) for prefix
 arithmetic and [`clap`](https://crates.io/crates/clap) for the command line.
 Everything else - the allocator, the big-number formatting, the JSON writer -
 is in this repo.
+
+## Install
+
+Grab a binary for your platform from the
+[releases page](https://github.com/jiphex/network-prefix-cli/releases), unpack
+it and put `prefixtool` on your `PATH`. Each archive ships with a `.sha256`
+next to it. Builds are published for Linux (x86-64 gnu and static musl,
+arm64), macOS (Intel and Apple silicon) and Windows.
+
+Or build it yourself:
+
+```
+cargo install --git https://github.com/jiphex/network-prefix-cli
+```
+
+From a checkout:
 
 ```
 cargo build --release

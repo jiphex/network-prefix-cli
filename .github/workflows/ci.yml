@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Warnings are failures in CI; they are cheap to fix and expensive to ignore.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Build
+        run: cargo build --locked --all-targets
+
+      - name: Test
+        run: cargo test --locked --all-targets
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update --component rustfmt,clippy
+          rustup default stable
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets

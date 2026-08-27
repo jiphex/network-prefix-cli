@@ -1,0 +1,204 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release, e.g. v0.0.1"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: prefixtool
+
+permissions:
+  contents: read
+
+jobs:
+  # Fail before spending six build jobs on a tag that disagrees with the
+  # manifest, which would otherwise ship binaries whose --version is wrong.
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - id: tag
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          manifest=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$version" != "$manifest" ]; then
+            echo "::error::tag $tag implies version $version, but Cargo.toml says $manifest"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            packages: musl-tools
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            packages: gcc-aarch64-linux-gnu
+            linker: aarch64-linux-gnu-gcc
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+
+      - name: Install cross-compilation packages
+        if: matrix.packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ${{ matrix.packages }}
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Select cross linker
+        if: matrix.linker != ''
+        run: |
+          target=$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
+          echo "CARGO_TARGET_${target}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test
+        # Only the natively-runnable targets; the cross-built ones are just
+        # checked for existence in the packaging step.
+        if: matrix.linker == '' && matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/$BIN"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            bin="$bin.exe"
+          fi
+          "$bin" --version
+          "$bin" 2001:db8::/52 -56 -64x2
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="$BIN-${{ needs.verify.outputs.tag }}-${{ matrix.target }}"
+          mkdir -p "staging/$name" dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/$BIN.exe" "staging/$name/"
+          else
+            cp "target/${{ matrix.target }}/release/$BIN" "staging/$name/"
+          fi
+          cp README.md LICENSE "staging/$name/"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            (cd staging && 7z a -tzip "../dist/$name.zip" "$name") > /dev/null
+          else
+            tar -C staging -czf "dist/$name.tar.gz" "$name"
+          fi
+          # sha256sum on Linux and Git Bash, shasum on macOS.
+          cd dist
+          for f in *; do
+            if command -v sha256sum > /dev/null; then
+              sha256sum "$f" > "$f.sha256"
+            else
+              shasum -a 256 "$f" > "$f.sha256"
+            fi
+          done
+          ls -l
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write release notes
+        run: |
+          {
+            echo "\`prefixtool\` ${{ needs.verify.outputs.version }} - inspect, split and carve up IPv4 and IPv6 prefixes."
+            echo
+            echo '```'
+            echo 'prefixtool 2001:db8::/52 -56 -64x2'
+            echo '```'
+            echo
+            echo "## Install"
+            echo
+            echo "Download the archive for your platform below, unpack it, and put \`prefixtool\` on your \`PATH\`. Each archive ships with a \`.sha256\` alongside it:"
+            echo
+            echo '```'
+            echo 'sha256sum -c prefixtool-${{ needs.verify.outputs.tag }}-<target>.tar.gz.sha256'
+            echo '```'
+            echo
+            echo "Or build it yourself:"
+            echo
+            echo '```'
+            echo 'cargo install --git ${{ github.server_url }}/${{ github.repository }} --tag ${{ needs.verify.outputs.tag }}'
+            echo '```'
+            echo
+            echo "## Binaries"
+            echo
+            for f in dist/*.tar.gz dist/*.zip; do
+              [ -e "$f" ] || continue
+              echo "- \`$(basename "$f")\`"
+            done
+          } > notes.md
+          cat notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Idempotent, so re-running the workflow for a tag refreshes assets
+          # instead of failing on an existing release.
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" --notes-file notes.md
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file notes.md dist/*
+          fi
