@@ -677,14 +677,45 @@ fn a_share_line_is_never_truncated_by_the_limit() {
 }
 
 #[test]
-fn a_ratio_replaces_the_free_list_it_describes() {
-    // The shares are the remaining space, repartitioned. Printing the free
-    // blocks as well would say it twice, and those bare lines would read as
-    // single-block shares. The same rule a split already follows.
-    let s = stdout(&["10.0.0.0/16", "-24", "%1:1", "-q"]);
+fn whatever_divides_the_remainder_replaces_the_free_list() {
+    // A split, a count and a ratio all describe the remaining space, so
+    // listing the free blocks too would print the same addresses twice at
+    // two granularities - and for a ratio those bare lines would read as
+    // single-block shares.
+    //
+    // 10.0.0.0/16 less a /17 leaves exactly one free block, so any of these
+    // that leaked it would show 10.0.128.0/17 alongside its own subdivision.
+    for (op, want) in [
+        ("/18", vec!["10.0.0.0/17", "10.0.128.0/18", "10.0.192.0/18"]),
+        ("%2", vec!["10.0.0.0/17", "10.0.128.0/18", "10.0.192.0/18"]),
+        (
+            "%1:1",
+            vec!["10.0.0.0/17", "10.0.128.0/18", "10.0.192.0/18"],
+        ),
+    ] {
+        let s = stdout(&["10.0.0.0/16", "-17", op, "-q"]);
+        assert_eq!(s.lines().collect::<Vec<_>>(), want, "for {op}");
+    }
+
+    // A carve on its own still lists what it left - nothing else is saying it.
+    let s = stdout(&["10.0.0.0/16", "-17", "-q"]);
+    assert_eq!(
+        s.lines().collect::<Vec<_>>(),
+        vec!["10.0.0.0/17", "10.0.128.0/17"]
+    );
+}
+
+#[test]
+fn a_count_over_a_remainder_prints_each_part_once() {
+    // %8 over a remainder that is already 8 blocks divides nothing, so a
+    // leaked free list showed every prefix twice over.
+    let s = stdout(&["10.0.0.0/16", "-24", "%8", "-q"]);
     let lines: Vec<&str> = s.lines().collect();
-    assert_eq!(lines.len(), 3, "carve grant plus one line per share: {s:?}");
-    assert_eq!(lines[0], "10.0.0.0/24");
+    assert_eq!(lines.len(), 9, "one carve grant and eight parts: {s:?}");
+    let mut sorted = lines.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), lines.len(), "a prefix was printed twice");
 }
 
 #[test]

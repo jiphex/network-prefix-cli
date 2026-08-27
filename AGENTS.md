@@ -8,7 +8,7 @@ are easy to break here.
 
 ```
 cargo build
-cargo test --locked --all-targets      # 179 tests: 118 unit, 61 end-to-end
+cargo test --locked --all-targets      # 180 tests: 118 unit, 62 end-to-end
 cargo clippy --locked --all-targets
 cargo fmt --all --check
 ```
@@ -77,9 +77,14 @@ that the human renderer can say so and the machine ones can ignore it.
 One prefix per line, with one exception: a `%a:b:c` ratio prints one line per
 share, space-separated, because a share can be several blocks and nothing
 about the blocks says how many. Those lines ignore `-n` - truncating one is a
-wrong answer rather than a short one - and a ratio suppresses the free-block
-list for the space it describes, as a split already does, so its lines cannot
-be mistaken for single-block shares.
+wrong answer rather than a short one.
+
+**Nothing prints the same addresses twice.** A carve lists what it left over,
+but `/N`, `%M` and `%a:b:c` each describe that same space themselves, so any
+of them suppresses the free-block list. Leaving it in prints the remainder at
+two granularities at once - and for a ratio the bare free lines read as
+single-block shares. Anything new that divides the remainder belongs in that
+condition in `quiet`.
 
 **Listings stay lazy.** `--all` on `::/0 /128` must return immediately when
 piped to `head`. Do not collect a split into a `Vec`.

@@ -788,11 +788,12 @@ pub fn quiet(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         for n in plan.granted() {
             writeln!(w, "{n}")?;
         }
-        // A split or a ratio already describes the remaining space, and
-        // listing the free blocks as well prints it twice at two different
-        // granularities. Worse for a ratio: the free blocks would arrive as
-        // bare lines among the one-line-per-share ones and read as shares.
-        if r.splits.is_empty() && r.shares.is_empty() {
+        // Whatever divides the remaining space - `/N`, `%M` or `%a:b:c` -
+        // already describes it, and listing the free blocks as well prints
+        // the same addresses twice at two different granularities. Worse for
+        // a ratio, where the free blocks would arrive as bare lines among the
+        // one-line-per-share ones and read as single-block shares.
+        if r.splits.is_empty() && r.parts.is_empty() && r.shares.is_empty() {
             list(w, plan.free.iter().map(ToString::to_string), o, "")?;
         }
     }
