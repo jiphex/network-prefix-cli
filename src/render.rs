@@ -6,7 +6,7 @@ use crate::info::{Info, Reverse};
 use crate::json::{self, J};
 use crate::num::{self, Count};
 use crate::ops::Target;
-use crate::report::{Report, Source, Split};
+use crate::report::{Parts, Report, Source, Split};
 use crate::style::Style;
 use crate::wellknown::Relation;
 use ipnet::IpNet;
@@ -220,8 +220,50 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         carve_section(w, plan, o)?;
     }
 
+    for p in &r.parts {
+        parts_section(w, &r.info, p, o)?;
+    }
+
     for s in &r.splits {
         split_section(w, &r.info, s, o)?;
+    }
+    Ok(())
+}
+
+/// `%M` - the space divided into a given number of subnets rather than into a
+/// given size.
+fn parts_section(w: &mut impl Write, info: &Info, p: &Parts, o: &Opts) -> io::Result<()> {
+    match p.source {
+        Source::Whole => heading(w, o, &format!("Split {} into {}", info.net, p.wanted))?,
+        Source::Remainder => heading(
+            w,
+            o,
+            &format!("Split the remaining space into {}", p.wanted),
+        )?,
+    }
+
+    let sizes = p.sizes();
+    let described: Vec<String> = sizes
+        .iter()
+        .map(|(len, n)| format!("{n} x /{len}"))
+        .collect();
+    field(w, o, "Sizes", &english_list_of(&described))?;
+    if sizes.len() > 1 {
+        field(
+            w,
+            o,
+            "Note",
+            "as even as the space allows - an exact split needs a power of two",
+        )?;
+    }
+    if let (Some(first), Some(last)) = (p.blocks.first(), p.blocks.last()) {
+        field(w, o, "First", &first.to_string())?;
+        field(w, o, "Last", &last.to_string())?;
+    }
+    writeln!(w)?;
+    let (shown, more) = list(w, p.blocks.iter().copied(), o, "    ")?;
+    if more {
+        truncated(w, o, "    ", shown, &p.blocks.len().to_string())?;
     }
     Ok(())
 }
@@ -453,16 +495,15 @@ fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Re
 /// `a`, `a and b`, `a, b and c` - so a heading listing several prefixes reads
 /// as a sentence rather than as a delimited field.
 fn english_list(nets: &[IpNet]) -> String {
-    match nets {
+    let rendered: Vec<String> = nets.iter().map(ToString::to_string).collect();
+    english_list_of(&rendered)
+}
+
+fn english_list_of(items: &[String]) -> String {
+    match items {
         [] => String::new(),
-        [only] => only.to_string(),
-        [rest @ .., last] => format!(
-            "{} and {last}",
-            rest.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        [only] => only.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -576,11 +617,15 @@ pub fn quiet(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
             list(w, plan.free.iter().copied(), o, "")?;
         }
     }
+    for p in &r.parts {
+        list(w, p.blocks.iter().copied(), o, "")?;
+    }
     for s in &r.splits {
         list(w, s.subnets(), o, "")?;
     }
     // With no operators at all, the prefix itself is the useful output.
     if r.supernets.is_empty()
+        && r.parts.is_empty()
         && r.aggregates.is_empty()
         && r.neighbours.is_empty()
         && r.picks.is_empty()
@@ -837,6 +882,47 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                     ),
                 ),
             ]),
+        ));
+    }
+
+    if !r.parts.is_empty() {
+        fields.push((
+            "parts",
+            J::Arr(
+                r.parts
+                    .iter()
+                    .map(|p| {
+                        J::Obj(vec![
+                            ("wanted", json::n(p.wanted)),
+                            (
+                                "source",
+                                json::s(match p.source {
+                                    Source::Whole => "prefix",
+                                    Source::Remainder => "remaining_space",
+                                }),
+                            ),
+                            (
+                                "sizes",
+                                J::Arr(
+                                    p.sizes()
+                                        .iter()
+                                        .map(|(len, n)| {
+                                            J::Obj(vec![
+                                                ("prefix_length", json::n(len)),
+                                                ("count", json::n(n)),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
+                            ),
+                            (
+                                "subnets",
+                                J::Arr(p.blocks.iter().map(|n| json::s(n.to_string())).collect()),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            ),
         ));
     }
 

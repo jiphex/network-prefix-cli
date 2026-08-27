@@ -3,6 +3,7 @@
 //!
 //! ```text
 //!   /64        split the prefix into /64s
+//!   %5         split it into 5 subnets, whatever size that takes
 //!   -56        carve one /56 out of it
 //!   -64*2      carve two /64s  (-64x2 is the same thing, and survives zsh)
 //!   -10.0.1.0/24   carve out that exact subnet
@@ -28,6 +29,8 @@ use std::str::FromStr;
 pub enum Op {
     /// `/N` - divide into equal /N subnets.
     Split(u8),
+    /// `%M` - divide into exactly M subnets, whatever lengths that needs.
+    Parts(u64),
     /// `-N` / `-N*K` - allocate `count` subnets of length `len`.
     Carve { len: u8, count: u64 },
     /// `-<prefix>` - remove one specific subnet.
@@ -114,7 +117,7 @@ pub fn parse(token: &str) -> Result<Op, String> {
         Err(nom::Err::Error(Reason(Some(why))) | nom::Err::Failure(Reason(Some(why)))) => Err(why),
         // Nothing matched the leading character, so the sigil itself is wrong.
         Err(_) => Err(format!(
-            "unknown operator '{token}': expected /N, -N, -N*K, -<prefix>, +N or =<addr>"
+            "unknown operator '{token}': expected /N, %M, -N, -N*K, -<prefix>, +N or =<addr>"
         )),
     }
 }
@@ -128,6 +131,7 @@ pub fn parse(token: &str) -> Result<Op, String> {
 fn operator(input: &'_ str) -> R<'_, Op> {
     alt((
         preceded(char('/'), map(prefix_len, Op::Split)),
+        preceded(char('%'), map(parts, Op::Parts)),
         preceded(char('-'), alt((map(network, Op::Exclude), carve))),
         preceded(
             char('+'),
@@ -192,6 +196,20 @@ fn target(input: &'_ str) -> R<'_, Target> {
 
 /// A signed index. `+3` reads naturally beside `-3` but i64 will not parse the
 /// plus, so it is stripped first.
+/// `M`, the number of subnets to end up with.
+fn parts(input: &'_ str) -> R<'_, u64> {
+    map_res(rest, |s: &str| -> Result<u64, String> {
+        let n: u64 = s
+            .parse()
+            .map_err(|_| format!("'{s}' is not a number of subnets"))?;
+        if n == 0 {
+            return Err("a split into 0 subnets does nothing".into());
+        }
+        Ok(n)
+    })
+    .parse(input)
+}
+
 fn index(what: &'static str) -> impl FnMut(&str) -> R<'_, i64> {
     move |input| {
         map_res(preceded(opt(char('+')), rest), move |s: &str| {
@@ -232,7 +250,7 @@ pub fn parse_net(s: &str) -> Result<IpNet, String> {
 /// still reach `parse` and get a useful error rather than "unexpected
 /// argument".
 pub fn looks_like_op(token: &str) -> bool {
-    let Some(rest) = token.strip_prefix(['/', '+', '=', '-', '@', '^']) else {
+    let Some(rest) = token.strip_prefix(['/', '+', '=', '-', '@', '^', '%']) else {
         return false;
     };
     if !token.starts_with('-') {
@@ -258,6 +276,17 @@ mod tests {
     fn splits() {
         assert_eq!(p("/64"), Op::Split(64));
         assert_eq!(p("/0"), Op::Split(0));
+    }
+
+    #[test]
+    fn splits_into_a_count() {
+        assert_eq!(p("%5"), Op::Parts(5));
+        assert_eq!(p("%1"), Op::Parts(1));
+        assert_eq!(p("%1000"), Op::Parts(1000));
+        assert!(parse("%0").is_err());
+        assert!(parse("%").is_err());
+        assert!(parse("%five").is_err());
+        assert!(parse("%-2").is_err());
     }
 
     #[test]

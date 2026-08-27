@@ -125,6 +125,47 @@ fn json_output_carries_the_exact_address_count() {
 }
 
 #[test]
+fn splits_into_a_number_of_subnets() {
+    let s = stdout(&["10.0.0.0/24", "%5"]);
+    assert!(s.contains("Split 10.0.0.0/24 into 5"));
+    assert!(s.contains("3 x /26 and 2 x /27"));
+
+    let blocks = stdout(&["10.0.0.0/24", "%5", "-q"]);
+    assert_eq!(
+        blocks,
+        "10.0.0.0/27\n10.0.0.32/27\n10.0.0.64/26\n10.0.0.128/26\n10.0.0.192/26\n"
+    );
+}
+
+#[test]
+fn a_power_of_two_count_matches_the_equivalent_length() {
+    assert_eq!(
+        stdout(&["2001:db8::/56", "%8", "-q", "--all"]),
+        stdout(&["2001:db8::/56", "/59", "-q", "--all"])
+    );
+}
+
+#[test]
+fn splitting_into_a_count_reaches_json() {
+    let s = stdout(&["10.0.0.0/24", "%5", "--json"]);
+    assert!(s.contains("\"wanted\": 5"));
+    assert!(s.contains("\"source\": \"prefix\""));
+    assert!(s.contains("\"prefix_length\": 26"));
+    assert!(s.contains("\"10.0.0.192/26\""));
+}
+
+#[test]
+fn an_impossible_count_explains_itself() {
+    let out = run(&["10.0.0.0/30", "%9"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("4 is the most it holds"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn picks_a_subnet_by_number() {
     let s = stdout(&["2001:db8::/52", "/64", "@3", "@-1", "-q", "-n", "0"]);
     assert_eq!(s, "2001:db8:0:3::/64\n2001:db8:0:fff::/64\n");
@@ -349,6 +390,8 @@ fn colour_never_changes_the_layout() {
             "=10.0.9.7",
         ],
         vec!["10.0.0.0/16", "/24", "@1", "@-1", "^1", "+10.1.0.0/16"],
+        vec!["10.0.0.0/24", "%5"],
+        vec!["10.0.0.0/22", "-24", "%5"],
         vec!["10.0.0.0/24", "-24", "-30"],
         vec!["2001:db8::/56", "-2001:db8:0:cc::/64"],
         vec!["10.0.0.0/16", "-10.0.8.0/22", "-24x3"],
