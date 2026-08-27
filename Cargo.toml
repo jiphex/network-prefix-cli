@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Inspect, split and carve up IPv4 and IPv6 prefixes"
 readme = "README.md"
+license = "MIT"
 repository = "https://github.com/jiphex/network-prefix-cli"
 categories = ["command-line-utilities", "network-programming"]
 keywords = ["ipv6", "subnet", "prefix", "cidr", "network"]

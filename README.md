@@ -186,3 +186,7 @@ cargo test
 Unit tests cover the allocator, the operator grammar, the special-range table,
 the reverse-DNS zones and the big-number formatting; `tests/cli.rs` runs the
 real binary and checks its output and exit codes.
+
+## License
+
+MIT - see [LICENSE](LICENSE).
