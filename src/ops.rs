@@ -14,6 +14,13 @@
 //! ```
 
 use ipnet::IpNet;
+use nom::branch::alt;
+use nom::bytes::complete::take_till;
+use nom::character::complete::{char, one_of};
+use nom::combinator::{all_consuming, map, map_opt, map_res, opt, rest};
+use nom::error::{ErrorKind, FromExternalError, ParseError};
+use nom::sequence::preceded;
+use nom::{IResult, Parser};
 use std::net::IpAddr;
 use std::str::FromStr;
 
@@ -63,53 +70,146 @@ impl Target {
     }
 }
 
+/// A nom error that can carry one of our own messages.
+///
+/// nom's own errors say which combinator gave up and where, which is the wrong
+/// vocabulary for a user who typed `-64*banana`. Leaf conversions therefore
+/// fail with a written explanation, and this type carries it back out. A
+/// branch that fails structurally carries nothing, so it never outranks a
+/// branch that has something useful to say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reason(Option<String>);
+
+impl<I> ParseError<I> for Reason {
+    fn from_error_kind(_: I, _: ErrorKind) -> Self {
+        Reason(None)
+    }
+
+    fn append(_: I, _: ErrorKind, other: Self) -> Self {
+        other
+    }
+
+    /// `alt` folds the branches' errors through this. A branch that explained
+    /// itself beats one that only failed to match.
+    fn or(self, other: Self) -> Self {
+        if other.0.is_some() { other } else { self }
+    }
+}
+
+impl<I, E: std::fmt::Display> FromExternalError<I, E> for Reason {
+    fn from_external_error(_: I, _: ErrorKind, e: E) -> Self {
+        Reason(Some(e.to_string()))
+    }
+}
+
+type R<'a, T> = IResult<&'a str, T, Reason>;
+
 /// Parse one command-line operator.
 pub fn parse(token: &str) -> Result<Op, String> {
-    let (sigil, rest) = token
-        .split_at_checked(1)
-        .ok_or_else(|| "empty operator".to_string())?;
-    // `-/56` reads naturally and means the same as `-56`.
-    let rest = rest.strip_prefix('/').unwrap_or(rest);
-
-    match sigil {
-        "/" => Ok(Op::Split(prefix_len(rest)?)),
-        // `+` takes either a length or a prefix, the same way `-` does.
-        "+" => {
-            if looks_like_address(rest) {
-                Ok(Op::Aggregate(parse_net(rest)?))
-            } else {
-                Ok(Op::Supernet(prefix_len(rest)?))
-            }
-        }
-        "=" => Ok(Op::Contains(target(rest)?)),
-        "@" => Ok(Op::Nth(index(rest, "subnet index")?)),
-        "^" => Ok(Op::Step(index(rest, "step")?)),
-        "-" => {
-            if looks_like_address(rest) {
-                let net = parse_net(rest)?;
-                Ok(Op::Exclude(net))
-            } else {
-                let (len_part, count_part) = match rest.find(['*', 'x', 'X']) {
-                    Some(i) => (&rest[..i], Some(&rest[i + 1..])),
-                    None => (rest, None),
-                };
-                let len = prefix_len(len_part)?;
-                let count = match count_part {
-                    None => 1,
-                    Some(c) => c
-                        .parse::<u64>()
-                        .map_err(|_| format!("'{c}' is not a subnet count"))?,
-                };
-                if count == 0 {
-                    return Err("a subnet count of 0 does nothing".into());
-                }
-                Ok(Op::Carve { len, count })
-            }
-        }
-        _ => Err(format!(
+    if token.is_empty() {
+        return Err("empty operator".to_string());
+    }
+    match all_consuming(operator).parse(token) {
+        Ok((_, op)) => Ok(op),
+        Err(nom::Err::Error(Reason(Some(why))) | nom::Err::Failure(Reason(Some(why)))) => Err(why),
+        // Nothing matched the leading character, so the sigil itself is wrong.
+        Err(_) => Err(format!(
             "unknown operator '{token}': expected /N, -N, -N*K, -<prefix>, +N or =<addr>"
         )),
     }
+}
+
+/// The grammar proper: a sigil, then a payload whose shape the sigil chooses.
+///
+/// `-` and `+` each accept either a prefix or a number. The prefix branch is
+/// tried first and fails silently when the payload is not an address, which is
+/// what lets `-64` fall through to the numeric branch while `-banana` still
+/// reports that it is not a prefix length.
+fn operator(input: &'_ str) -> R<'_, Op> {
+    alt((
+        preceded(char('/'), map(prefix_len, Op::Split)),
+        preceded(char('-'), alt((map(network, Op::Exclude), carve))),
+        preceded(
+            char('+'),
+            alt((map(network, Op::Aggregate), map(prefix_len, Op::Supernet))),
+        ),
+        preceded(char('='), map(target, Op::Contains)),
+        preceded(char('@'), map(index("subnet index"), Op::Nth)),
+        preceded(char('^'), map(index("step"), Op::Step)),
+    ))
+    .parse(input)
+}
+
+/// `N` or `/N`, where the whole remaining payload is the number. Taking the
+/// rest rather than just the digits is what keeps `/banana` reportable.
+fn prefix_len(input: &'_ str) -> R<'_, u8> {
+    map_res(preceded(opt(char('/')), rest), to_prefix_len).parse(input)
+}
+
+/// `N`, `N*K` or `NxK`. The `x` form survives zsh, which globs the `*`.
+fn carve(input: &'_ str) -> R<'_, Op> {
+    map_res(
+        preceded(
+            opt(char('/')),
+            (
+                take_till(|c| c == '*' || c == 'x' || c == 'X'),
+                opt(preceded(one_of("*xX"), rest)),
+            ),
+        ),
+        |(len, count): (&str, Option<&str>)| -> Result<Op, String> {
+            let len = to_prefix_len(len)?;
+            let count = match count {
+                None => 1,
+                Some(c) => c
+                    .parse::<u64>()
+                    .map_err(|_| format!("'{c}' is not a subnet count"))?,
+            };
+            if count == 0 {
+                return Err("a subnet count of 0 does nothing".into());
+            }
+            Ok(Op::Carve { len, count })
+        },
+    )
+    .parse(input)
+}
+
+/// A prefix, or nothing. Deliberately silent on failure: this is one arm of an
+/// `alt` whose other arm has the better complaint when the payload is a number.
+fn network(input: &'_ str) -> R<'_, IpNet> {
+    map_opt(rest, |s: &str| parse_net(s).ok()).parse(input)
+}
+
+/// An address keeps its identity as an address; anything else must be a prefix.
+fn target(input: &'_ str) -> R<'_, Target> {
+    map_res(rest, |s: &str| -> Result<Target, String> {
+        if let Ok(addr) = IpAddr::from_str(s) {
+            return Ok(Target::Addr(addr));
+        }
+        Ok(Target::Net(parse_net(s)?))
+    })
+    .parse(input)
+}
+
+/// A signed index. `+3` reads naturally beside `-3` but i64 will not parse the
+/// plus, so it is stripped first.
+fn index(what: &'static str) -> impl FnMut(&str) -> R<'_, i64> {
+    move |input| {
+        map_res(preceded(opt(char('+')), rest), move |s: &str| {
+            s.parse::<i64>()
+                .map_err(|_| format!("'{s}' is not a {what}"))
+        })
+        .parse(input)
+    }
+}
+
+fn to_prefix_len(s: &str) -> Result<u8, String> {
+    let n: u16 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a prefix length"))?;
+    if n > 128 {
+        return Err(format!("prefix length /{n} is longer than an IPv6 address"));
+    }
+    Ok(n as u8)
 }
 
 /// A prefix given without a length is treated as a single host.
@@ -122,29 +222,6 @@ pub fn parse_net(s: &str) -> Result<IpNet, String> {
         return Ok(IpNet::new(addr, len).expect("host length is always valid"));
     }
     Err(format!("'{s}' is not an IP prefix or address"))
-}
-
-fn target(s: &str) -> Result<Target, String> {
-    if let Ok(addr) = IpAddr::from_str(s) {
-        return Ok(Target::Addr(addr));
-    }
-    Ok(Target::Net(parse_net(s)?))
-}
-
-fn index(s: &str, what: &str) -> Result<i64, String> {
-    // `+3` reads naturally next to `-3`, but i64 will not parse the plus.
-    let s = s.strip_prefix('+').unwrap_or(s);
-    s.parse().map_err(|_| format!("'{s}' is not a {what}"))
-}
-
-fn prefix_len(s: &str) -> Result<u8, String> {
-    let n: u16 = s
-        .parse()
-        .map_err(|_| format!("'{s}' is not a prefix length"))?;
-    if n > 128 {
-        return Err(format!("prefix length /{n} is longer than an IPv6 address"));
-    }
-    Ok(n as u8)
 }
 
 /// Does this argument look like one of our operators rather than a clap flag?
@@ -290,6 +367,48 @@ mod tests {
         // So the user gets our error message, not clap's.
         assert!(looks_like_op("-64*banana"));
         assert!(parse("-64*banana").is_err());
+    }
+
+    #[test]
+    fn a_branch_with_something_to_say_beats_one_that_merely_failed() {
+        // `-banana` fails both arms of the alt: the prefix arm has nothing
+        // useful to add, so the numeric arm's complaint is what surfaces.
+        assert_eq!(
+            parse("-banana").unwrap_err(),
+            "'banana' is not a prefix length"
+        );
+        assert_eq!(
+            parse("+banana").unwrap_err(),
+            "'banana' is not a prefix length"
+        );
+        // And when the prefix arm is the one that should win, it does.
+        assert_eq!(
+            parse("-10.0.0.0/24"),
+            Ok(Op::Exclude("10.0.0.0/24".parse().unwrap()))
+        );
+    }
+
+    #[test]
+    fn reason_prefers_an_explanation_over_silence() {
+        use nom::error::ParseError;
+        // The input type is only there to satisfy the trait; `or` ignores it.
+        fn or(a: Reason, b: Reason) -> Reason {
+            <Reason as ParseError<&str>>::or(a, b)
+        }
+        let silent = Reason(None);
+        let spoke = Reason(Some("because".into()));
+        assert_eq!(or(silent.clone(), spoke.clone()), spoke);
+        assert_eq!(or(spoke.clone(), silent), spoke);
+    }
+
+    #[test]
+    fn trailing_junk_is_rejected_rather_than_ignored() {
+        // all_consuming: a parser that stopped early would silently accept
+        // half an operator.
+        assert!(parse("/64junk").is_err());
+        assert!(parse("@1junk").is_err());
+        assert!(parse("^1junk").is_err());
+        assert!(parse("-64*2junk").is_err());
     }
 
     #[test]
