@@ -10,10 +10,12 @@ use crate::info::Info;
 use crate::num::Count;
 use crate::ops::{Op, Target};
 use ipnet::IpNet;
+use std::collections::BinaryHeap;
 use std::net::IpAddr;
 
 pub struct Report {
     pub info: Info,
+    pub parts: Vec<Parts>,
     pub supernets: Vec<Supernet>,
     pub aggregates: Vec<Aggregation>,
     pub neighbours: Vec<Neighbour>,
@@ -67,6 +69,30 @@ pub struct Lookup {
     pub positions: Vec<(u8, IpNet, u128)>,
 }
 
+/// `%M` - the space divided into exactly M subnets.
+pub struct Parts {
+    pub wanted: u64,
+    pub source: Source,
+    /// Exactly `wanted` blocks, in address order.
+    pub blocks: Vec<IpNet>,
+}
+
+impl Parts {
+    /// The lengths used, longest first, with how many of each. At most two
+    /// distinct lengths ever appear.
+    pub fn sizes(&self) -> Vec<(u8, usize)> {
+        let mut sizes: Vec<(u8, usize)> = Vec::new();
+        for block in &self.blocks {
+            match sizes.iter_mut().find(|(len, _)| *len == block.prefix_len()) {
+                Some((_, n)) => *n += 1,
+                None => sizes.push((block.prefix_len(), 1)),
+            }
+        }
+        sizes.sort_by_key(|(len, _)| *len);
+        sizes
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Source {
     /// Splitting the prefix itself.
@@ -116,6 +142,7 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
 
     let mut requests = Vec::new();
     let mut split_lens = Vec::new();
+    let mut part_counts: Vec<u64> = Vec::new();
     let mut supernets = Vec::new();
     let mut aggregate_with: Vec<IpNet> = Vec::new();
     let mut neighbours = Vec::new();
@@ -134,6 +161,18 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
                 }
                 if !split_lens.contains(len) {
                     split_lens.push(*len);
+                }
+            }
+            Op::Parts(m) => {
+                if *m > carve::MAX_REQUEST_COUNT {
+                    return Err(format!(
+                        "{m} subnets is more than this splits in one go (limit {}); \
+                         use /N for a split that size",
+                        crate::num::group(&carve::MAX_REQUEST_COUNT.to_string())
+                    ));
+                }
+                if !part_counts.contains(m) {
+                    part_counts.push(*m);
                 }
             }
             Op::Supernet(len) => {
@@ -179,7 +218,7 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
                     return Err(format!(
                         "{count} subnets is more than this carves in one go \
                          (limit {}); use /{len} to describe a split that size instead",
-                        carve::MAX_REQUEST_COUNT
+                        crate::num::group(&carve::MAX_REQUEST_COUNT.to_string())
                     ));
                 }
                 // Expanded so each subnet gets its own outcome, and its own
@@ -216,6 +255,21 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
     };
 
     let plan = (!requests.is_empty()).then(|| carve::plan(net, &requests));
+
+    let parts = part_counts
+        .iter()
+        .map(|m| {
+            let (source, blocks) = match &plan {
+                Some(plan) => (Source::Remainder, plan.free.clone()),
+                None => (Source::Whole, vec![net]),
+            };
+            divide(&blocks, *m).map(|blocks| Parts {
+                wanted: *m,
+                source,
+                blocks,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let splits = split_lens
         .iter()
@@ -279,6 +333,7 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
 
     Ok(Report {
         info,
+        parts,
         supernets,
         aggregates,
         neighbours,
@@ -287,6 +342,70 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
         carve: plan,
         splits,
     })
+}
+
+/// Divide `blocks` into exactly `m` subnets that tile the same space.
+///
+/// Repeatedly halving the largest block is what makes the result as even as
+/// the space allows: every step narrows the gap between the biggest and the
+/// smallest, so at most two lengths are ever in play. When `m` is a power of
+/// two the result is the uniform split `/N` would have given.
+fn divide(blocks: &[IpNet], m: u64) -> Result<Vec<IpNet>, String> {
+    let m = usize::try_from(m).map_err(|_| format!("{m} subnets is more than this can hold"))?;
+    if m < blocks.len() {
+        return Err(format!(
+            "the space is already {} separate block{}, so it cannot become {m}",
+            blocks.len(),
+            if blocks.len() == 1 { "" } else { "s" }
+        ));
+    }
+
+    let mut heap: BinaryHeap<BySize> = blocks.iter().copied().map(BySize).collect();
+    while heap.len() < m {
+        let BySize(largest) = heap
+            .pop()
+            .expect("m is at least one and the heap is non-empty");
+        if largest.prefix_len() == largest.max_prefix_len() {
+            // Everything left is a single address, so there is nothing to
+            // halve and the count cannot go any higher.
+            return Err(format!(
+                "{} cannot be divided into {m} subnets; {} is the most it holds",
+                blocks
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                heap.len() + 1
+            ));
+        }
+        let (low, high) = carve::halves(&largest);
+        heap.push(BySize(low));
+        heap.push(BySize(high));
+    }
+
+    let mut out: Vec<IpNet> = heap.into_iter().map(|BySize(n)| n).collect();
+    out.sort();
+    Ok(out)
+}
+
+/// Orders blocks largest first, and among equals by lowest address, so the
+/// division is deterministic rather than however the heap happened to settle.
+#[derive(PartialEq, Eq)]
+struct BySize(IpNet);
+
+impl Ord for BySize {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let host = |n: &IpNet| n.max_prefix_len() - n.prefix_len();
+        host(&self.0)
+            .cmp(&host(&other.0))
+            .then_with(|| to_u128(other.0.network()).cmp(&to_u128(self.0.network())))
+    }
+}
+
+impl PartialOrd for BySize {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// The smallest prefix holding every input, plus whatever space that leaves
@@ -750,12 +869,96 @@ mod tests {
     }
 
     #[test]
+    fn dividing_into_a_count_tiles_the_prefix_exactly() {
+        // Whatever the count, the pieces cover the parent once over.
+        for m in 1..=64u64 {
+            let r = report("10.0.0.0/24", &[&format!("%{m}")]);
+            let blocks = &r.parts[0].blocks;
+            assert_eq!(blocks.len(), m as usize, "%{m} produced the wrong count");
+
+            let addresses: u128 = blocks
+                .iter()
+                .map(|n| 1u128 << (n.max_prefix_len() - n.prefix_len()))
+                .sum();
+            assert_eq!(addresses, 256, "%{m} does not fill the /24");
+
+            for pair in blocks.windows(2) {
+                assert_eq!(
+                    to_u128(pair[0].broadcast()) + 1,
+                    to_u128(pair[1].network()),
+                    "%{m}: {} and {} do not abut",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dividing_uses_at_most_two_lengths_one_bit_apart() {
+        // "As even as the space allows" means exactly this.
+        for m in 1..=64u64 {
+            let r = report("2001:db8::/56", &[&format!("%{m}")]);
+            let sizes = r.parts[0].sizes();
+            assert!(sizes.len() <= 2, "%{m} used {} lengths", sizes.len());
+            if let [(short, _), (long, _)] = sizes[..] {
+                assert_eq!(long, short + 1, "%{m} used /{short} and /{long}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_power_of_two_divides_evenly() {
+        // %4 on a /24 must be the same as /26.
+        let by_count = report("10.0.0.0/24", &["%4"]);
+        let by_length = report("10.0.0.0/24", &["/26"]);
+        assert_eq!(
+            by_count.parts[0]
+                .blocks
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            by_length.splits[0]
+                .subnets()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(by_count.parts[0].sizes(), vec![(26, 4)]);
+    }
+
+    #[test]
+    fn dividing_after_a_carve_works_on_the_remainder() {
+        let r = report("10.0.0.0/22", &["-24", "%5"]);
+        assert_eq!(r.parts[0].source, Source::Remainder);
+        let blocks: Vec<String> = r.parts[0].blocks.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            blocks,
+            vec![
+                "10.0.1.0/25",
+                "10.0.1.128/25",
+                "10.0.2.0/25",
+                "10.0.2.128/25",
+                "10.0.3.0/24",
+            ]
+        );
+        // The carved /24 is not among them.
+        assert!(!blocks.contains(&"10.0.0.0/24".to_string()));
+    }
+
+    #[test]
+    fn impossible_divisions_are_rejected_with_the_reason() {
+        assert!(err("10.0.0.0/30", "%9").contains("4 is the most it holds"));
+        assert!(errs("10.0.0.0/22", &["-24", "%1"]).contains("already 2 separate blocks"));
+        assert!(err("10.0.0.0/24", "%70000").contains("limit 65,536"));
+    }
+
+    #[test]
     fn nonsensical_lengths_are_rejected_with_advice() {
         assert!(err("10.0.0.0/24", "/16").contains("+16"));
         assert!(err("10.0.0.0/24", "+30").contains("/30"));
         assert!(err("10.0.0.0/24", "/64").contains("IPv4"));
         assert!(err("10.0.0.0/24", "=2001:db8::1").contains("IPv6"));
-        assert!(err("10.0.0.0/8", "-24*70000").contains("65536"));
+        assert!(err("10.0.0.0/8", "-24*70000").contains("65,536"));
     }
 
     #[test]

@@ -78,6 +78,7 @@ prefixtool [OPTIONS] <PREFIX> [OP]...
 | Operator | Meaning |
 | --- | --- |
 | `/N` | Split the prefix into `/N` subnets |
+| `%M` | Split it into `M` subnets, whatever lengths that needs |
 | `-N` | Carve one `/N` out of the prefix |
 | `-N*K`, `-NxK` | Carve `K` subnets of `/N` |
 | `-<prefix>` | Reserve one specific subnet, wherever it sits |
@@ -154,6 +155,33 @@ Split 2001:db8::/52 into /64
 
 Subnets are generated lazily, so `prefixtool ::/0 /128 -q | head` returns
 immediately rather than trying to enumerate 2^128 prefixes.
+
+### Splitting into a count
+
+`/N` asks for subnets of a given size. `%M` asks for a given number of them and
+works out the sizes, which is the question you have when the space is being
+shared between a fixed number of parties:
+
+```
+$ prefixtool 10.0.0.0/24 %5
+...
+Split 10.0.0.0/24 into 5
+  Sizes          3 x /26 and 2 x /27
+  Note           as even as the space allows - an exact split needs a power of two
+  First          10.0.0.0/27
+  Last           10.0.0.192/26
+
+    10.0.0.0/27
+    10.0.0.32/27
+    10.0.0.64/26
+    10.0.0.128/26
+    10.0.0.192/26
+```
+
+The pieces always tile the prefix exactly, and never use more than two lengths,
+one bit apart. When `M` is a power of two the result is the uniform split `/N`
+would have given. Like `/N`, a `%M` alongside a carve divides what the carve
+left over.
 
 ### Carving
 

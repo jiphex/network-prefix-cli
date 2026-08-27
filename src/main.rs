@@ -17,6 +17,7 @@ use std::process::ExitCode;
 const AFTER_HELP: &str = "\
 OPERATORS:
   /N            split the prefix into /N subnets
+  %M            split it into M subnets, whatever lengths that needs
   -N            carve one /N out of the prefix
   -N*K, -NxK    carve K subnets of /N (use the x form to keep zsh happy)
   -<prefix>     reserve one specific subnet, wherever it sits
@@ -36,6 +37,9 @@ EXAMPLES:
 
   prefixtool 2001:db8::/52 /64
         how many /64s does it hold, and where do they start and end
+
+  prefixtool 10.0.0.0/24 %5
+        divide it between five teams, as evenly as the space allows
 
   prefixtool 2001:db8::/52 -56 -64x2
         carve out a /56 and two /64s, and aggregate what remains
