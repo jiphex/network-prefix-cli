@@ -7,6 +7,7 @@ use crate::json::{self, J};
 use crate::num::{self, Count};
 use crate::ops::Target;
 use crate::report::{Report, Source, Split};
+use crate::style::Style;
 use crate::wellknown::Relation;
 use ipnet::IpNet;
 use std::io::{self, Write};
@@ -16,6 +17,8 @@ pub struct Opts {
     pub limit: usize,
     /// List every prefix, however many there are.
     pub all: bool,
+    /// Colour for the human-readable report. Machine output ignores it.
+    pub style: Style,
 }
 
 impl Opts {
@@ -28,24 +31,35 @@ const LABEL: usize = 15;
 
 pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
     let i = &r.info;
-    writeln!(w, "{}  -  {}", i.net, i.family())?;
+    writeln!(
+        w,
+        "{}  {}  {}",
+        o.style.title(&i.net.to_string()),
+        o.style.dim("-"),
+        i.family()
+    )?;
     if let Some(given) = &i.given {
-        writeln!(w, "  (given as {given}; host bits cleared)")?;
+        writeln!(
+            w,
+            "{}",
+            o.style
+                .dim(&format!("  (given as {given}; host bits cleared)"))
+        )?;
     }
     writeln!(w)?;
 
-    field(w, "Network", &i.net.network().to_string())?;
+    field(w, o, "Network", &i.net.network().to_string())?;
     if i.is_ipv4() {
-        field(w, "Broadcast", &i.last().to_string())?;
-        field(w, "Netmask", &i.net.netmask().to_string())?;
-        field(w, "Wildcard", &i.net.hostmask().to_string())?;
+        field(w, o, "Broadcast", &i.last().to_string())?;
+        field(w, o, "Netmask", &i.net.netmask().to_string())?;
+        field(w, o, "Wildcard", &i.net.hostmask().to_string())?;
     } else {
-        field(w, "Last address", &i.last().to_string())?;
+        field(w, o, "Last address", &i.last().to_string())?;
         if let Some(e) = i.expanded() {
-            field(w, "Expanded", &e)?;
+            field(w, o, "Expanded", &e)?;
         }
     }
-    field(w, "Prefix length", &{
+    field(w, o, "Prefix length", &{
         let bits = i.net.max_prefix_len() - i.net.prefix_len();
         format!(
             "/{}  ({bits} host bit{})",
@@ -53,7 +67,7 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
             if bits == 1 { "" } else { "s" }
         )
     })?;
-    field(w, "Addresses", &i.addresses.describe())?;
+    field(w, o, "Addresses", &i.addresses.describe())?;
     if let Some(h) = &i.hosts {
         let mut v = format!(
             "{}  ({} - {})",
@@ -64,7 +78,7 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         if let Some(note) = h.note {
             v = format!("{}  [{}]", num::group(&h.count.to_string()), note);
         }
-        field(w, "Usable hosts", &v)?;
+        field(w, o, "Usable hosts", &v)?;
     }
 
     let splits = i.common_splits();
@@ -76,58 +90,62 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                     .map(|c| format!("{} x /{len}", c.grouped()))
             })
             .collect();
-        field(w, "Holds", &parts.join("   "))?;
+        field(w, o, "Holds", &parts.join("   "))?;
     }
 
     match &i.reverse {
-        Reverse::Zone(z) => field(w, "Reverse DNS", z)?,
-        Reverse::Unaligned(why) => field(w, "Reverse DNS", why)?,
+        Reverse::Zone(z) => field(w, o, "Reverse DNS", z)?,
+        Reverse::Unaligned(why) => field(w, o, "Reverse DNS", why)?,
     }
 
     for (n, m) in i.specials.iter().enumerate() {
-        field(w, if n == 0 { "Ranges" } else { "" }, &m.describe())?;
+        field(w, o, if n == 0 { "Ranges" } else { "" }, &m.describe())?;
     }
     for c in i.cautions() {
         field(
             w,
+            o,
             "Caution",
-            &format!(
+            &o.style.warn(&format!(
                 "{} is {} - not for general assignment",
                 i.net, c.special.name
-            ),
+            )),
         )?;
     }
 
     for s in &r.supernets {
-        writeln!(w, "\nSupernet /{}", s.net.prefix_len())?;
+        heading(w, o, &format!("Supernet /{}", s.net.prefix_len()))?;
         writeln!(
             w,
             "  {}   holds {} x /{}",
-            s.net,
+            o.style.prefix(&s.net.to_string()),
             s.siblings.grouped(),
             i.net.prefix_len()
         )?;
     }
 
     for a in &r.aggregates {
-        writeln!(w, "\nAggregate {} with {}", i.net, a.with)?;
+        heading(w, o, &format!("Aggregate {} with {}", i.net, a.with))?;
         field(
             w,
+            o,
             "Smallest",
             &format!("{}  ({})", a.net, size_hint(&a.net)),
         )?;
         if a.nested {
             let inner = if a.net == a.with { i.net } else { a.with };
-            field(w, "Note", &format!("{} already contains {inner}", a.net))?;
+            field(w, o, "Note", &format!("{} already contains {inner}", a.net))?;
         } else if a.exact {
             field(
                 w,
+                o,
                 "Note",
                 "exact - the two are siblings, nothing else is covered",
             )?;
         } else {
             field(
                 w,
+                o,
                 "Also covers",
                 &format!(
                     "{} block{} neither prefix uses",
@@ -141,32 +159,46 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
 
     for n in &r.neighbours {
         let sign = if n.step >= 0 { "+" } else { "" };
-        writeln!(w, "\nStep {sign}{}", n.step)?;
-        writeln!(w, "  {}   {}", n.net, size_hint(&n.net))?;
+        heading(w, o, &format!("Step {sign}{}", n.step))?;
+        writeln!(
+            w,
+            "  {}   {}",
+            o.style.prefix(&n.net.to_string()),
+            size_hint(&n.net)
+        )?;
     }
 
     for p in &r.picks {
-        writeln!(w, "\nSubnet @{} of /{}", p.index, p.len)?;
+        heading(w, o, &format!("Subnet @{} of /{}", p.index, p.len))?;
         writeln!(
             w,
-            "  {}   (index {})",
-            p.net,
-            num::group(&p.resolved.to_string())
+            "  {}   {}",
+            o.style.prefix(&p.net.to_string()),
+            o.style
+                .dim(&format!("(index {})", num::group(&p.resolved.to_string())))
         )?;
     }
 
     for l in &r.lookups {
-        writeln!(w, "\nLookup {}", l.target)?;
+        heading(w, o, &format!("Lookup {}", l.target))?;
         if !l.inside {
-            writeln!(w, "  no - {} is outside {}", l.target, i.net)?;
+            writeln!(
+                w,
+                "  {} {} is outside {}",
+                o.style.bad("no -"),
+                l.target,
+                i.net
+            )?;
             continue;
         }
-        writeln!(w, "  yes - inside {}", i.net)?;
+        writeln!(w, "  {} inside {}", o.style.good("yes -"), i.net)?;
         for (len, sub, idx) in &l.positions {
             writeln!(
                 w,
-                "  /{len} -> {sub}   (subnet #{})",
-                num::group(&idx.to_string())
+                "  /{len} -> {}   {}",
+                o.style.prefix(&sub.to_string()),
+                o.style
+                    .dim(&format!("(subnet #{})", num::group(&idx.to_string())))
             )?;
         }
     }
@@ -182,7 +214,7 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
 }
 
 fn carve_section(w: &mut impl Write, plan: &Plan, o: &Opts) -> io::Result<()> {
-    writeln!(w, "\nCarve from {}", plan.parent)?;
+    heading(w, o, &format!("Carve from {}", plan.parent))?;
     let req = plan
         .grants
         .iter()
@@ -200,24 +232,39 @@ fn carve_section(w: &mut impl Write, plan: &Plan, o: &Opts) -> io::Result<()> {
         .max()
         .unwrap_or(10)
         .max(8);
-    writeln!(w, "  {:<req$}  {:<width$}  Size", "Request", "Assigned")?;
+    writeln!(
+        w,
+        "  {}",
+        o.style.dim(&format!(
+            "{:<req$}  {:<width$}  Size",
+            "Request", "Assigned"
+        ))
+    )?;
     for g in &plan.grants {
         match &g.outcome {
+            // Padded before styling: escape sequences have no width, but the
+            // formatter counts them anyway and would skew every column.
             Outcome::Granted(n) => writeln!(
                 w,
-                "  {:<req$}  {:<width$}  {}",
+                "  {:<req$}  {}  {}",
                 g.label,
-                n.to_string(),
+                o.style.good(&format!("{:<width$}", n.to_string())),
                 size_hint(n)
             )?,
             Outcome::Exhausted => writeln!(
                 w,
-                "  {:<req$}  {:<width$}  no space left in {}",
-                g.label, "-", plan.parent
+                "  {:<req$}  {}  {}",
+                g.label,
+                o.style.bad(&format!("{:<width$}", "-")),
+                o.style.bad(&format!("no space left in {}", plan.parent))
             )?,
-            Outcome::Impossible(why) => {
-                writeln!(w, "  {:<req$}  {:<width$}  {}", g.label, "-", why)?
-            }
+            Outcome::Impossible(why) => writeln!(
+                w,
+                "  {:<req$}  {}  {}",
+                g.label,
+                o.style.bad(&format!("{:<width$}", "-")),
+                o.style.bad(why)
+            )?,
         }
     }
 
@@ -250,13 +297,16 @@ fn carve_section(w: &mut impl Write, plan: &Plan, o: &Opts) -> io::Result<()> {
     if shown < plan.free.len() {
         writeln!(
             w,
-            "    ... {} more free block{} (use --all or -n N)",
-            plan.free.len() - shown,
-            if plan.free.len() - shown == 1 {
-                ""
-            } else {
-                "s"
-            }
+            "{}",
+            o.style.dim(&format!(
+                "    ... {} more free block{} (use --all or -n N)",
+                plan.free.len() - shown,
+                if plan.free.len() - shown == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ))
         )?;
     }
     Ok(())
@@ -264,13 +314,16 @@ fn carve_section(w: &mut impl Write, plan: &Plan, o: &Opts) -> io::Result<()> {
 
 fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Result<()> {
     match s.source {
-        Source::Whole => writeln!(w, "\nSplit {} into /{}", info.net, s.len)?,
-        Source::Remainder => writeln!(
+        Source::Whole => heading(w, o, &format!("Split {} into /{}", info.net, s.len))?,
+        Source::Remainder => heading(
             w,
-            "\nSplit the remaining space into /{} ({} free block{})",
-            s.len,
-            s.blocks.len(),
-            if s.blocks.len() == 1 { "" } else { "s" }
+            o,
+            &format!(
+                "Split the remaining space into /{} ({} free block{})",
+                s.len,
+                s.blocks.len(),
+                if s.blocks.len() == 1 { "" } else { "s" }
+            ),
         )?,
     }
     if s.blocks.is_empty() {
@@ -278,18 +331,19 @@ fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Re
         return Ok(());
     }
     let counts = s.counts();
-    field(w, "Subnets", &num::sum_grouped(&counts))?;
+    field(w, o, "Subnets", &num::sum_grouped(&counts))?;
     if let (Some(first), Some(last)) = (s.first(), s.last()) {
-        field(w, "First", &first.to_string())?;
-        field(w, "Last", &last.to_string())?;
+        field(w, o, "First", &first.to_string())?;
+        field(w, o, "Last", &last.to_string())?;
     }
     let each = size_hint(&first_of(s));
     if !matches!(each.as_str(), "1 x /64" | "1 address") {
-        field(w, "Each holds", &each)?;
+        field(w, o, "Each holds", &each)?;
     }
     if s.too_small > 0 {
         field(
             w,
+            o,
             "Skipped",
             &format!(
                 "{} free block{} smaller than a /{}",
@@ -303,7 +357,13 @@ fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Re
     let shown = list(w, s.subnets(), o, "    ")?;
     let total = num::sum_grouped(&counts);
     if !o.all && shown == o.take() {
-        writeln!(w, "    ... (showing {shown} of {total}; use --all or -n N)")?;
+        writeln!(
+            w,
+            "{}",
+            o.style.dim(&format!(
+                "    ... (showing {shown} of {total}; use --all or -n N)"
+            ))
+        )?;
     }
     Ok(())
 }
@@ -321,14 +381,21 @@ fn list(
 ) -> io::Result<usize> {
     let mut n = 0;
     for item in items.take(o.take()) {
-        writeln!(w, "{indent}{item}")?;
+        writeln!(w, "{indent}{}", o.style.prefix(&item.to_string()))?;
         n += 1;
     }
     Ok(n)
 }
 
-fn field(w: &mut impl Write, label: &str, value: &str) -> io::Result<()> {
-    writeln!(w, "  {label:<LABEL$}{value}")
+/// A labelled value. The label is padded before it is styled, because escape
+/// sequences have no width but would still be counted by the formatter.
+fn field(w: &mut impl Write, o: &Opts, label: &str, value: &str) -> io::Result<()> {
+    writeln!(w, "  {}{value}", o.style.dim(&format!("{label:<LABEL$}")))
+}
+
+/// A section heading, always preceded by a blank line.
+fn heading(w: &mut impl Write, o: &Opts, text: &str) -> io::Result<()> {
+    writeln!(w, "\n{}", o.style.bold(text))
 }
 
 /// A short description of how much space a prefix represents, in the units the

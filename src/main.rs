@@ -7,6 +7,7 @@ mod num;
 mod ops;
 mod render;
 mod report;
+mod style;
 mod wellknown;
 
 use clap::Parser;
@@ -54,6 +55,11 @@ EXAMPLES:
   prefixtool 10.0.0.0/24 +10.0.1.0/24
         can these two be aggregated, and does it waste anything
 
+COLOUR:
+  The report is coloured when it is going to a terminal, and never when it is
+  piped, redirected, or emitted as --json or --quiet. NO_COLOR and TERM=dumb
+  turn it off; --color=always forces it on, for piping into less -R.
+
 EXIT STATUS:
   0  success
   1  bad prefix or operator
@@ -92,6 +98,11 @@ struct Cli {
     /// Emit a JSON object instead of a report
     #[arg(long)]
     json: bool,
+
+    /// When to colour the report: auto, always or never
+    #[arg(long, value_name = "WHEN", default_value_t = style::When::Auto,
+          value_enum, hide_default_value = true)]
+    color: style::When,
 }
 
 /// Move operators behind a `--` so that flags and operators can be given in
@@ -127,7 +138,8 @@ fn main() -> ExitCode {
     match run(&cli) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("prefixtool: {e}");
+            let s = style::Style::for_stderr(cli.color);
+            eprintln!("{} {e}", s.bad("prefixtool:"));
             ExitCode::from(1)
         }
     }
@@ -145,6 +157,12 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
     let opts = render::Opts {
         limit: cli.limit,
         all: cli.all,
+        // Machine-readable output is never coloured, whatever was asked for.
+        style: if cli.json || cli.quiet {
+            style::Style::plain()
+        } else {
+            style::Style::new(cli.color)
+        },
     };
     let stdout = io::stdout();
     let mut w = BufWriter::new(stdout.lock());

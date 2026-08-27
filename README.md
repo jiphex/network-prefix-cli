@@ -103,6 +103,7 @@ the `*`. Flags and operators can be given in any order.
 | `-a`, `--all` | List every prefix, however many there are |
 | `-q`, `--quiet` | Print prefixes only, one per line, for piping |
 | `--json` | Emit a JSON object instead of a report |
+| `--color <when>` | `auto` (default), `always` or `never` |
 
 ### Exit status
 
@@ -239,6 +240,21 @@ Lookup 2001:db8:0:3::5
   yes - inside 2001:db8::/52
   /64 -> 2001:db8:0:3::/64   (subnet #3)
 ```
+
+### Colour
+
+The report is coloured when it is going to a terminal: the prefix under
+inspection, section headings, granted allocations in green, refusals in red,
+and anything you should not be assigning from in yellow.
+
+It stays out of the way of everything else. Colour is off when the output is
+piped or redirected, off for `--json` and `--quiet` whatever else you ask for,
+and off when [`NO_COLOR`](https://no-color.org) is set or `TERM=dumb`.
+`--color=always` forces it on, which is what you want for `| less -R`.
+
+Styling never changes the layout - stripping the escape sequences from a
+coloured report gives back the uncoloured one byte for byte, and a test holds
+that.
 
 ### Scripting
 
