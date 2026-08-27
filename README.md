@@ -252,6 +252,20 @@ Share 2001:db8::/48 in the ratio 2:1:1
 A share gets as many blocks as its portion needs; the shares tile the space
 exactly between them, and they come out in the order they were written.
 
+Under `--quiet` a ratio prints one line per share, blocks separated by spaces,
+because a share is the unit you asked for and a flat list would lose where
+each one ends:
+
+```
+$ prefixtool 10.0.0.0/24 %3:1 -q
+10.0.0.0/25 10.0.0.128/26
+10.0.0.192/26
+```
+
+So `while read -a blocks` gets one share per iteration. Those lines are never
+cut short by `-n`: half a share's blocks is a wrong answer rather than a short
+one, and the ratio already says how many lines to expect.
+
 A ratio is exactly cuttable when its parts, reduced by their common factor, add
 up to a power of two. `2:1:1` is, and so is `3:1` and `6:2`. `2:1` is not -
 two thirds of a prefix is not a prefix - so it lands on the nearest aligned

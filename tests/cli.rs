@@ -640,6 +640,54 @@ fn a_ratio_shares_the_space_out() {
 }
 
 #[test]
+fn quiet_gives_a_ratio_one_line_per_share() {
+    // A share can be several blocks and there is no way to tell how many by
+    // looking at them, so a flat list loses which block belongs to whom.
+    let s = stdout(&["10.0.0.0/24", "%3:1", "-q"]);
+    assert_eq!(
+        s,
+        "10.0.0.0/25 10.0.0.128/26\n\
+         10.0.0.192/26\n"
+    );
+    // One line per share, always - the ratio says how many lines to expect.
+    assert_eq!(
+        stdout(&["2001:db8::/48", "%2:1:1", "-q"]).lines().count(),
+        3
+    );
+    assert_eq!(
+        stdout(&["10.0.0.0/16", "%9:5:3:1", "-q"]).lines().count(),
+        4
+    );
+}
+
+#[test]
+fn a_share_line_is_never_truncated_by_the_limit() {
+    // Half of a share's blocks is a wrong answer, not a short one, so -n
+    // does not apply to the blocks on a line.
+    let all = stdout(&["10.0.0.0/8", "-30", "%2:1:1", "-q", "--all"]);
+    let limited = stdout(&["10.0.0.0/8", "-30", "%2:1:1", "-q", "-n", "2"]);
+    assert_eq!(all, limited);
+    // The first share is the ragged end of the remainder, so it really is
+    // more blocks than the limit would have allowed.
+    let first = all.lines().nth(1).expect("a share line");
+    assert!(
+        first.split(' ').count() > 2,
+        "expected a multi-block share, got {first}"
+    );
+}
+
+#[test]
+fn a_ratio_replaces_the_free_list_it_describes() {
+    // The shares are the remaining space, repartitioned. Printing the free
+    // blocks as well would say it twice, and those bare lines would read as
+    // single-block shares. The same rule a split already follows.
+    let s = stdout(&["10.0.0.0/16", "-24", "%1:1", "-q"]);
+    let lines: Vec<&str> = s.lines().collect();
+    assert_eq!(lines.len(), 3, "carve grant plus one line per share: {s:?}");
+    assert_eq!(lines[0], "10.0.0.0/24");
+}
+
+#[test]
 fn a_ratio_that_cannot_be_cut_exactly_says_what_it_gave_instead() {
     // Two thirds of a prefix is not a prefix, so 2:1 lands on 3:1 - the same
     // bargain %3 makes when it hands out 2:1:1 for three equal parties.

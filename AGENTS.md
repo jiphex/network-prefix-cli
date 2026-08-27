@@ -8,7 +8,7 @@ are easy to break here.
 
 ```
 cargo build
-cargo test --locked --all-targets      # 175 tests: 118 unit, 57 end-to-end
+cargo test --locked --all-targets      # 179 tests: 118 unit, 61 end-to-end
 cargo clippy --locked --all-targets
 cargo fmt --all --check
 ```
@@ -73,6 +73,13 @@ than a rounded one.
 **`--quiet` and `--json` are for parsing.** Never coloured, whatever `--color`
 says. No truncation hints, no prose. `list` returns whether more was waiting so
 that the human renderer can say so and the machine ones can ignore it.
+
+One prefix per line, with one exception: a `%a:b:c` ratio prints one line per
+share, space-separated, because a share can be several blocks and nothing
+about the blocks says how many. Those lines ignore `-n` - truncating one is a
+wrong answer rather than a short one - and a ratio suppresses the free-block
+list for the space it describes, as a split already does, so its lines cannot
+be mistaken for single-block shares.
 
 **Listings stay lazy.** `--all` on `::/0 /128` must return immediately when
 piped to `head`. Do not collect a split into a `Vec`.

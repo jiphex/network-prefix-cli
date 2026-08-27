@@ -788,7 +788,11 @@ pub fn quiet(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         for n in plan.granted() {
             writeln!(w, "{n}")?;
         }
-        if r.splits.is_empty() {
+        // A split or a ratio already describes the remaining space, and
+        // listing the free blocks as well prints it twice at two different
+        // granularities. Worse for a ratio: the free blocks would arrive as
+        // bare lines among the one-line-per-share ones and read as shares.
+        if r.splits.is_empty() && r.shares.is_empty() {
             list(w, plan.free.iter().map(ToString::to_string), o, "")?;
         }
     }
@@ -796,10 +800,17 @@ pub fn quiet(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         list(w, p.blocks.iter().map(ToString::to_string), o, "")?;
     }
     for sh in &r.shares {
-        // Flattened: a share's blocks are consecutive, and the ratio the
-        // reader asked for is what decides where one share ends.
+        // One line per share, its blocks space-separated, because a share is
+        // the unit the reader asked for and a flat list loses where each one
+        // ends - a share can be several blocks, and how many is not something
+        // you can tell by looking at them.
+        //
+        // Never truncated, whatever -n says: half a share's blocks is a wrong
+        // answer rather than a short one, and the line count is the ratio the
+        // reader wrote, so there is nothing to protect them from.
         for blocks in &sh.granted {
-            list(w, blocks.iter().map(ToString::to_string), o, "")?;
+            let line: Vec<String> = blocks.iter().map(ToString::to_string).collect();
+            writeln!(w, "{}", line.join(" "))?;
         }
     }
     for s in &r.splits {
