@@ -68,6 +68,15 @@ EXIT STATUS:
   0  success
   1  bad prefix or operator
   3  a carve request could not be satisfied
+  4  --quiet, and an =<addr> asked about is outside the prefix
+
+  Under --quiet an =<addr> is a question, so its answer is the exit status:
+
+      prefixtool 10.0.0.0/8 =10.1.2.3 -q > /dev/null || echo not ours
+
+  Outside is 4 rather than 1 so that it stays distinct from bad input. A
+  mistyped address is a different thing from a confident no, and a script
+  checking for one should never be handed the other.
 ";
 
 #[derive(Parser)]
@@ -187,9 +196,19 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
         return Err(e.to_string());
     }
 
+    // Under --quiet the report is a machine's input, so an `=` lookup becomes
+    // a predicate and its answer is the exit status. It gets a code of its
+    // own rather than reusing 1, so that a script asking whether an address
+    // is inside can never read a mistyped address as a confident no. Left
+    // alone in the other modes, where the answer is on screen to be read.
+    let outside = cli.quiet && report.lookups.iter().any(|l| !l.inside);
     let unsatisfied = report.carve.as_ref().is_some_and(|p| !p.all_granted());
     Ok(if unsatisfied {
+        // A plan that could not be carried out outranks the answer to one of
+        // the questions asked alongside it.
         ExitCode::from(3)
+    } else if outside {
+        ExitCode::from(4)
     } else {
         ExitCode::SUCCESS
     })

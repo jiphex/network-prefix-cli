@@ -31,23 +31,36 @@ pub struct Style {
 impl Style {
     /// Decide once, up front, so every call site stays a simple lookup.
     pub fn new(when: When) -> Style {
-        Style {
-            on: match when {
-                When::Always => true,
-                When::Never => false,
-                When::Auto => std::io::stdout().is_terminal() && !suppressed_by_environment(),
-            },
-        }
+        Style::decide(
+            when,
+            std::io::stdout().is_terminal(),
+            suppressed_by_environment(),
+        )
     }
 
     /// For messages on stderr, which is a different stream and may be a
     /// terminal when stdout is not.
     pub fn for_stderr(when: When) -> Style {
+        Style::decide(
+            when,
+            std::io::stderr().is_terminal(),
+            suppressed_by_environment(),
+        )
+    }
+
+    /// The rule itself, with both of its inputs handed in.
+    ///
+    /// Kept separate from the two constructors above so it can be tested for
+    /// what it decides rather than for what the machine running the tests
+    /// happens to look like. Asking the real stdout made the answer depend on
+    /// how the suite was invoked: piped it said no, and under a terminal - an
+    /// interactive `cargo test`, or a Nix builder - it said yes.
+    fn decide(when: When, is_terminal: bool, suppressed: bool) -> Style {
         Style {
             on: match when {
                 When::Always => true,
                 When::Never => false,
-                When::Auto => std::io::stderr().is_terminal() && !suppressed_by_environment(),
+                When::Auto => is_terminal && !suppressed,
             },
         }
     }
@@ -136,6 +149,8 @@ mod tests {
     fn never_wins_over_a_terminal() {
         assert_eq!(Style::new(When::Never).bold("x"), "x");
         assert_eq!(Style::for_stderr(When::Never).bad("x"), "x");
+        // Never holds whatever the stream and the environment say.
+        assert_eq!(Style::decide(When::Never, true, false).bold("x"), "x");
     }
 
     #[test]
@@ -146,9 +161,27 @@ mod tests {
     }
 
     #[test]
-    fn auto_is_off_when_not_a_terminal() {
-        // The test harness captures stdout, so this is never a terminal.
-        assert_eq!(Style::new(When::Auto).bold("x"), "x");
+    fn the_whole_decision_table() {
+        // (when, terminal, suppressed) -> coloured?
+        let cases = [
+            (When::Auto, false, false, false),
+            (When::Auto, true, false, true),
+            // NO_COLOR or TERM=dumb beat a terminal.
+            (When::Auto, true, true, false),
+            (When::Auto, false, true, false),
+            // An explicit choice beats everything, in both directions.
+            (When::Always, false, true, true),
+            (When::Always, true, false, true),
+            (When::Never, true, false, false),
+            (When::Never, false, false, false),
+        ];
+        for (when, is_terminal, suppressed, coloured) in cases {
+            let got = Style::decide(when, is_terminal, suppressed).bold("x") != "x";
+            assert_eq!(
+                got, coloured,
+                "{when:?} with terminal={is_terminal} suppressed={suppressed}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,139 @@
+# Working on prefixtool
+
+A CLI that inspects, splits and carves IPv4 and IPv6 prefixes. The README
+covers what it does; this covers how to change it without breaking things that
+are easy to break here.
+
+## Commands
+
+```
+cargo build
+cargo test --locked --all-targets      # 133 tests: 91 unit, 42 end-to-end
+cargo clippy --locked --all-targets
+cargo fmt --all --check
+```
+
+CI runs all four with `RUSTFLAGS=-D warnings` on Linux, macOS and Windows, so
+run them that way before pushing. `--locked` means **`Cargo.lock` has to be
+refreshed whenever the version changes** - it records the package's own
+version, and a stale lockfile fails the build rather than quietly updating.
+
+Run the suite through a pty as well as a pipe when touching anything that
+looks at its environment:
+
+```
+script -qec "cargo test --locked --all-targets" /dev/null
+```
+
+## Dependencies
+
+`ipnet`, `clap`, `nom`. That is the whole list and it is deliberate.
+
+The colour handling, the JSON writer, the big-number formatting and the
+allocator are all hand-rolled because each would otherwise be a dependency
+earning its keep only in a corner of one module. Terminal detection uses
+`std::io::IsTerminal`. Adding a crate is a decision to raise with whoever owns
+the repository, not a detail.
+
+## Layout
+
+| Module | Holds |
+| --- | --- |
+| `ops.rs` | The operator grammar, parsed with nom |
+| `report.rs` | Turns a prefix plus operators into everything to be shown |
+| `carve.rs` | The best-fit allocator, and the map of a parent's blocks |
+| `render.rs` | Text, `--quiet` and `--json` output |
+| `num.rs` | Address counts as powers of two, and how they are written |
+| `style.rs` | Terminal colour |
+| `info.rs`, `wellknown.rs` | Facts about a single prefix |
+| `json.rs` | A small JSON writer |
+
+## Conventions the tests enforce
+
+**Pad before styling.** An escape sequence has no printed width, but
+`format!("{:<width$}")` counts it anyway, so styling a value before padding it
+silently shifts every column after it - and looks fine in a plain-text test.
+`colour_never_changes_the_layout` asserts that stripping the escapes from a
+coloured report gives back the uncoloured one byte for byte. Extend it when
+adding a section.
+
+**Tests must not depend on their environment.** A colour test once asked the
+real stdout whether it was a terminal and asserted the answer was no. It
+passed under a pipe, which is how CI runs, and failed under a terminal, which
+is how an interactive `cargo test` and a Nix builder run. Hand such decisions
+in as arguments and test the rule, not the machine - see `Style::decide`.
+
+**The report summarises, the JSON does not.** Past 2^32 the human report gives
+a power of two and an order of magnitude; `--json` always carries exact
+integers. `num::describe_sum` is for people, `num::sum_grouped` for machines.
+Indexes stay exact everywhere: an approximated index is a wrong answer rather
+than a rounded one.
+
+**`--quiet` and `--json` are for parsing.** Never coloured, whatever `--color`
+says. No truncation hints, no prose. `list` returns whether more was waiting so
+that the human renderer can say so and the machine ones can ignore it.
+
+**Listings stay lazy.** `--all` on `::/0 /128` must return immediately when
+piped to `head`. Do not collect a split into a `Vec`.
+
+## Invariants worth keeping
+
+Two of the more valuable tests are properties rather than examples, and both
+found real bugs when first written:
+
+- The carve map's rows **tile the parent exactly** - abutting, no gap, no
+  overlap. Writing this exposed `Request::Floating` carrying a count it could
+  allocate but only partly report.
+- An aggregate **contains every input, and no spare block overlaps one**.
+  Writing this exposed `+` aggregating pairwise, which listed a prefix the
+  user had named as unused space.
+
+When adding an operator, reach for the property first.
+
+## Arithmetic traps
+
+IPv6 sizes overflow the obvious types. Two cases have bitten and are covered:
+
+- Stepping a `/1` needs a block size of `2^127`, which is `i128::MAX + 1`.
+  Compute offsets unsigned in both directions.
+- `@-1` over `::/0` split into `/128`s needs index `2^128-1` against a count of
+  `2^128`, which does not fit in a `u128` at all. Count back from the top
+  instead of computing the count.
+
+`num::Count` holds an exponent rather than a value for this reason.
+
+## Shell-facing details
+
+Operator sigils must survive an unquoted shell. `*` is a glob, which is why
+`-64x2` exists alongside `-64*2`; `>` and `<` are redirection, which is why
+stepping is `^N`. `@`, `^`, `%`, `+`, `=` and `/` are all safe in bash and zsh.
+
+Flags and operators may be interleaved. `arrange()` in `main.rs` partitions
+argv before clap sees it, because clap would otherwise swallow `--json` into
+the operator list.
+
+## Releasing
+
+`Cargo.toml` is the only place a version lives. The flake reads it with
+`fromTOML`; the Homebrew formula is generated from it.
+
+1. Bump `version` in `Cargo.toml` on a branch, refresh `Cargo.lock`, open a PR.
+2. Merging it to the default branch creates the `v<version>` tag and publishes
+   the release: six targets built, then the formula regenerated and committed.
+
+Do not create tags by hand - merging the bump is what cuts a release, and an
+agent may not have permission to push tags anyway. A merge that does not change
+the version is ignored, so Dependabot's manifest updates are safe.
+
+Versions below `1.0.0`, and any with a suffix, publish as pre-releases.
+
+## Documentation
+
+README examples are generated from the binary and diffed against it, not
+written by hand. After changing output, regenerate the affected block and
+confirm it matches:
+
+```
+diff <(./target/debug/prefixtool 2001::/64 --color=never) \
+     <(sed -n '/^\$ prefixtool 2001::\/64$/,/^```$/p' README.md | sed '1d;$d')
+```
