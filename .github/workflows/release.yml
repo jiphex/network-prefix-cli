@@ -25,6 +25,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -39,8 +40,17 @@ jobs:
             echo "::error::tag $tag implies version $version, but Cargo.toml says $manifest"
             exit 1
           fi
+          # A 0.x version is pre-production by semver's own definition, and
+          # a suffixed version (1.0.0-rc1) says so outright. Either marks the
+          # release as a prerelease so it does not show as "latest".
+          case "$version" in
+            0.*|*-*) prerelease=true ;;
+            *)       prerelease=false ;;
+          esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "releasing $tag (prerelease=$prerelease)"
 
   build:
     name: ${{ matrix.target }}
@@ -163,6 +173,10 @@ jobs:
       - name: Write release notes
         run: |
           {
+            if [ "${{ needs.verify.outputs.prerelease }}" = "true" ]; then
+              echo "> **Pre-production release.** Published for testing; the interface may still change."
+              echo
+            fi
             echo "\`prefixtool\` ${{ needs.verify.outputs.version }} - inspect, split and carve up IPv4 and IPv6 prefixes."
             echo
             echo '```'
@@ -196,13 +210,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.verify.outputs.tag }}
+          PRE: ${{ needs.verify.outputs.prerelease }}
         run: |
           set -euo pipefail
           # Idempotent, so re-running the workflow for a tag refreshes assets
-          # instead of failing on an existing release.
+          # instead of failing on an existing release. --prerelease is passed
+          # explicitly either way, so a re-run also corrects the flag.
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --notes-file notes.md
+            gh release edit "$TAG" --title "$TAG" --notes-file notes.md --prerelease="$PRE"
             gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" --title "$TAG" --notes-file notes.md dist/*
+            gh release create "$TAG" --title "$TAG" --notes-file notes.md --prerelease="$PRE" dist/*
           fi
+          gh release view "$TAG" --json tagName,isPrerelease,assets \
+            --jq '"published \(.tagName) prerelease=\(.isPrerelease) assets=\(.assets|length)"' 
