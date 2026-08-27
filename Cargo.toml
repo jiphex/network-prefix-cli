@@ -1,6 +1,6 @@
 [package]
 name = "prefixtool"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "Inspect, split and carve up IPv4 and IPv6 prefixes"
 readme = "README.md"
