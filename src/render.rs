@@ -87,7 +87,7 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
             .iter()
             .filter_map(|len| {
                 i.subnet_count(*len)
-                    .map(|c| format!("{} x /{len}", c.grouped()))
+                    .map(|c| format!("{} x /{len}", c.short()))
             })
             .collect();
         field(w, o, "Holds", &parts.join("   "))?;
@@ -119,7 +119,7 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
             w,
             "  {}   holds {} x /{}",
             o.style.prefix(&s.net.to_string()),
-            s.siblings.grouped(),
+            s.siblings.short(),
             i.net.prefix_len()
         )?;
     }
@@ -275,13 +275,13 @@ fn carve_section(w: &mut impl Write, plan: &Plan, o: &Opts) -> io::Result<()> {
             "  Remaining      nothing - {} is fully allocated",
             plan.parent
         )?;
-        return Ok(());
+        return map_section(w, plan, o);
     }
     let counts = plan.free_counts();
     writeln!(
         w,
         "  Remaining      {} address{} in {} block{}",
-        num::sum_grouped(&counts),
+        num::describe_sum(&counts),
         if counts.len() == 1 && counts[0].as_u128() == Some(1) {
             ""
         } else {
@@ -293,23 +293,99 @@ fn carve_section(w: &mut impl Write, plan: &Plan, o: &Opts) -> io::Result<()> {
     if let Some(largest) = plan.largest_free() {
         writeln!(w, "  Largest block  {largest}  ({})", size_hint(&largest))?;
     }
-    let shown = list(w, plan.free.iter().copied(), o, "    ")?;
-    if shown < plan.free.len() {
-        writeln!(
-            w,
-            "{}",
-            o.style.dim(&format!(
-                "    ... {} more free block{} (use --all or -n N)",
-                plan.free.len() - shown,
-                if plan.free.len() - shown == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ))
-        )?;
+    map_section(w, plan, o)
+}
+
+/// How many blocks either side of an allocation are worth showing for context.
+const CONTEXT: usize = 3;
+
+/// The parent laid out block by block, with the allocations marked in place.
+///
+/// Two flat lists - what was assigned, and what is free - leave the reader to
+/// reconstruct the layout by comparing addresses. This shows it directly.
+fn map_section(w: &mut impl Write, plan: &Plan, o: &Opts) -> io::Result<()> {
+    let rows = plan.map();
+    // Keep every allocation, plus its immediate neighbours for orientation.
+    let carved: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.carved)
+        .map(|(i, _)| i)
+        .collect();
+    // With nothing carved the map is just the free list again, and the
+    // remaining-space summary above has already said everything there is.
+    if carved.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    heading(w, o, &format!("Map of {}", plan.parent))?;
+    let mut keep: Vec<bool> = (0..rows.len())
+        .map(|i| {
+            if o.all {
+                true
+            } else {
+                carved.iter().any(|c| i.abs_diff(*c) <= CONTEXT)
+            }
+        })
+        .collect();
+    // A run of one is not worth hiding: the line saying so is longer than the
+    // line it replaces.
+    for i in 0..keep.len() {
+        let alone = !keep[i] && (i == 0 || keep[i - 1]) && (i + 1 == keep.len() || keep[i + 1]);
+        if alone {
+            keep[i] = true;
+        }
+    }
+
+    let width = rows
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| keep[*i])
+        .map(|(_, r)| r.net.to_string().len())
+        .max()
+        .unwrap_or(0);
+
+    let mut elided: Vec<IpNet> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        if !keep[i] {
+            elided.push(row.net);
+            continue;
+        }
+        flush_elided(w, o, &mut elided)?;
+        if row.carved {
+            // Padded before styling: escape sequences would otherwise be
+            // counted as width and pull the label out of line. Only the
+            // carved rows are padded, so free rows carry no trailing space.
+            writeln!(
+                w,
+                "  {} {}   {}",
+                o.style.good("->"),
+                o.style.good(&format!("{:<width$}", row.net.to_string())),
+                o.style.dim("carved")
+            )?;
+        } else {
+            writeln!(w, "     {}", o.style.prefix(&row.net.to_string()))?;
+        }
+    }
+    flush_elided(w, o, &mut elided)
+}
+
+/// Collapse a run of hidden blocks into one line that still accounts for them.
+fn flush_elided(w: &mut impl Write, o: &Opts, elided: &mut Vec<IpNet>) -> io::Result<()> {
+    if elided.is_empty() {
+        return Ok(());
+    }
+    let counts: Vec<Count> = elided
+        .iter()
+        .map(|n| Count::pow2(u32::from(n.max_prefix_len() - n.prefix_len())))
+        .collect();
+    let line = format!(
+        "     ... {} block{}, {} addresses (use --all)",
+        elided.len(),
+        if elided.len() == 1 { "" } else { "s" },
+        num::describe_sum(&counts)
+    );
+    elided.clear();
+    writeln!(w, "{}", o.style.dim(&line))
 }
 
 fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Result<()> {
@@ -331,7 +407,7 @@ fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Re
         return Ok(());
     }
     let counts = s.counts();
-    field(w, o, "Subnets", &num::sum_grouped(&counts))?;
+    field(w, o, "Subnets", &num::describe_sum(&counts))?;
     if let (Some(first), Some(last)) = (s.first(), s.last()) {
         field(w, o, "First", &first.to_string())?;
         field(w, o, "Last", &last.to_string())?;
@@ -355,7 +431,7 @@ fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Re
     }
     writeln!(w)?;
     let shown = list(w, s.subnets(), o, "    ")?;
-    let total = num::sum_grouped(&counts);
+    let total = num::describe_sum(&counts);
     if !o.all && shown == o.take() {
         writeln!(
             w,
@@ -409,14 +485,14 @@ fn size_hint(net: &IpNet) -> String {
             31 => "2 addresses".into(),
             _ => format!(
                 "{} addresses, {} usable",
-                count.grouped(),
+                count.short(),
                 num::group(&(count.as_u128().unwrap_or(0) - 2).to_string())
             ),
         };
     }
     match net.prefix_len() {
         128 => "1 address".into(),
-        len if len < 64 => format!("{} x /64", Count::pow2(u32::from(64 - len)).grouped()),
+        len if len < 64 => format!("{} x /64", Count::pow2(u32::from(64 - len)).short()),
         64 => "1 x /64".into(),
         _ => format!("{} addresses", Count::pow2(host_bits).describe()),
     }
@@ -691,6 +767,20 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                     "largest_free_block",
                     plan.largest_free()
                         .map_or(J::Null, |n| json::s(n.to_string())),
+                ),
+                (
+                    "map",
+                    J::Arr(
+                        plan.map()
+                            .iter()
+                            .map(|r| {
+                                J::Obj(vec![
+                                    ("prefix", json::s(r.net.to_string())),
+                                    ("carved", J::Bool(r.carved)),
+                                ])
+                            })
+                            .collect(),
+                    ),
                 ),
             ]),
         ));

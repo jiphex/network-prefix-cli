@@ -17,8 +17,14 @@ pub const MAX_REQUEST_COUNT: u64 = 65_536;
 
 #[derive(Debug, Clone)]
 pub enum Request {
-    /// "give me `count` subnets of length `len`, anywhere they fit"
-    Floating { len: u8, count: u64 },
+    /// "give me a subnet of this length, anywhere it fits"
+    ///
+    /// One subnet per request. A request for several is expanded by the
+    /// caller into one of these each, so that every allocation gets its own
+    /// outcome: a single request standing for several could only report one
+    /// of them, and the rest would silently vanish from the results while
+    /// still being taken out of the free list.
+    Floating(u8),
     /// "reserve exactly this subnet"
     Fixed(IpNet),
 }
@@ -48,7 +54,38 @@ pub struct Plan {
     pub free: Vec<IpNet>,
 }
 
+/// One block of the parent, as it appears in the map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub net: IpNet,
+    /// True when this block was handed out rather than left free.
+    pub carved: bool,
+}
+
 impl Plan {
+    /// Every block of the parent in address order, marked with whether it was
+    /// carved out - a picture of where the allocations landed rather than two
+    /// separate lists to cross-reference by eye.
+    ///
+    /// The allocations and the free blocks tile the parent exactly between
+    /// them, so no address is listed twice or missed.
+    pub fn map(&self) -> Vec<Row> {
+        let mut rows: Vec<Row> = self
+            .granted()
+            .map(|n| Row {
+                net: *n,
+                carved: true,
+            })
+            .chain(self.free.iter().map(|n| Row {
+                net: *n,
+                carved: false,
+            }))
+            .collect();
+        // Disjoint blocks, so ordering by network address is a total order.
+        rows.sort_by_key(|r| r.net);
+        rows
+    }
+
     pub fn granted(&self) -> impl Iterator<Item = &IpNet> {
         self.grants.iter().filter_map(|g| match &g.outcome {
             Outcome::Granted(n) => Some(n),
@@ -94,19 +131,10 @@ pub fn plan(parent: IpNet, requests: &[Request]) -> Plan {
                         outcome: take_exact(&mut free, parent, *net),
                     });
                 }
-                (Pass::Floating, Request::Floating { len, count }) => {
-                    // Expanded by the caller, so count is always 1 here; kept
-                    // general so the allocator stands on its own.
-                    let mut outcome = Outcome::Exhausted;
-                    for _ in 0..*count {
-                        outcome = take(&mut free, parent, *len);
-                        if !matches!(outcome, Outcome::Granted(_)) {
-                            break;
-                        }
-                    }
+                (Pass::Floating, Request::Floating(len)) => {
                     grants[i] = Some(Grant {
                         label: format!("/{len}"),
-                        outcome,
+                        outcome: take(&mut free, parent, *len),
                     });
                 }
                 _ => {}
@@ -237,9 +265,9 @@ mod tests {
         let p = plan(
             net("2001:db8::/52"),
             &[
-                Request::Floating { len: 56, count: 1 },
-                Request::Floating { len: 64, count: 1 },
-                Request::Floating { len: 64, count: 1 },
+                Request::Floating(56),
+                Request::Floating(64),
+                Request::Floating(64),
             ],
         );
         assert_eq!(
@@ -261,10 +289,7 @@ mod tests {
         // will need, because the /56 is serviced first by size.
         let p = plan(
             net("2001:db8::/52"),
-            &[
-                Request::Floating { len: 64, count: 1 },
-                Request::Floating { len: 56, count: 1 },
-            ],
+            &[Request::Floating(64), Request::Floating(56)],
         );
         let g = granted(&p);
         // Both fit, and the /56 is aligned on a /56 boundary.
@@ -278,21 +303,97 @@ mod tests {
         // The floating /64 would otherwise take 10.0.0.0/24's space first.
         let p = plan(
             net("10.0.0.0/22"),
-            &[
-                Request::Floating { len: 24, count: 1 },
-                Request::Fixed(net("10.0.0.0/24")),
-            ],
+            &[Request::Floating(24), Request::Fixed(net("10.0.0.0/24"))],
         );
         assert!(p.all_granted());
         assert_eq!(granted(&p), vec!["10.0.1.0/24", "10.0.0.0/24"]);
     }
 
     #[test]
-    fn remainder_is_aggregated() {
+    fn the_map_places_the_carve_among_the_blocks_around_it() {
         let p = plan(
-            net("10.0.0.0/24"),
-            &[Request::Floating { len: 25, count: 1 }],
+            net("2001:db8::/56"),
+            &[Request::Fixed(net("2001:db8:0:cc::/64"))],
         );
+        let rows: Vec<String> = p
+            .map()
+            .iter()
+            .map(|r| format!("{}{}", if r.carved { "*" } else { " " }, r.net))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                " 2001:db8::/57",
+                " 2001:db8:0:80::/58",
+                " 2001:db8:0:c0::/61",
+                " 2001:db8:0:c8::/62",
+                "*2001:db8:0:cc::/64",
+                " 2001:db8:0:cd::/64",
+                " 2001:db8:0:ce::/63",
+                " 2001:db8:0:d0::/60",
+                " 2001:db8:0:e0::/59",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_map_tiles_the_parent_exactly() {
+        // Every address in the parent appears in exactly one row: the sizes
+        // must add up, and consecutive rows must abut with no gap or overlap.
+        for (parent, reqs) in [
+            (
+                "2001:db8::/56",
+                vec![Request::Fixed(net("2001:db8:0:cc::/64"))],
+            ),
+            (
+                "10.0.0.0/16",
+                vec![
+                    Request::Fixed(net("10.0.8.0/22")),
+                    Request::Floating(24),
+                    Request::Floating(24),
+                    Request::Floating(24),
+                    Request::Floating(24),
+                ],
+            ),
+            ("10.0.0.0/24", vec![Request::Floating(24)]),
+            (
+                "10.0.0.0/22",
+                vec![
+                    Request::Floating(30),
+                    Request::Floating(30),
+                    Request::Floating(30),
+                ],
+            ),
+        ] {
+            let parent: IpNet = parent.parse().unwrap();
+            let p = plan(parent, &reqs);
+            let rows = p.map();
+            assert!(!rows.is_empty(), "{parent} produced an empty map");
+
+            let addr = |n: &IpNet| crate::report::to_u128(n.network());
+            let end = |n: &IpNet| crate::report::to_u128(n.broadcast());
+
+            assert_eq!(addr(&rows[0].net), addr(&parent), "map starts late");
+            assert_eq!(
+                end(&rows[rows.len() - 1].net),
+                end(&parent),
+                "map ends early"
+            );
+            for pair in rows.windows(2) {
+                assert_eq!(
+                    end(&pair[0].net) + 1,
+                    addr(&pair[1].net),
+                    "{} and {} do not abut",
+                    pair[0].net,
+                    pair[1].net
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn remainder_is_aggregated() {
+        let p = plan(net("10.0.0.0/24"), &[Request::Floating(25)]);
         assert_eq!(free(&p), vec!["10.0.0.128/25"]);
     }
 
@@ -300,10 +401,7 @@ mod tests {
     fn exhaustion_is_reported_not_panicked() {
         let p = plan(
             net("10.0.0.0/24"),
-            &[
-                Request::Floating { len: 24, count: 1 },
-                Request::Floating { len: 30, count: 1 },
-            ],
+            &[Request::Floating(24), Request::Floating(30)],
         );
         assert!(!p.all_granted());
         assert!(matches!(p.grants[1].outcome, Outcome::Exhausted));
@@ -312,19 +410,13 @@ mod tests {
 
     #[test]
     fn requests_bigger_than_the_parent_are_impossible() {
-        let p = plan(
-            net("10.0.0.0/24"),
-            &[Request::Floating { len: 16, count: 1 }],
-        );
+        let p = plan(net("10.0.0.0/24"), &[Request::Floating(16)]);
         assert!(matches!(p.grants[0].outcome, Outcome::Impossible(_)));
     }
 
     #[test]
     fn a_v6_length_against_a_v4_parent_is_impossible() {
-        let p = plan(
-            net("10.0.0.0/8"),
-            &[Request::Floating { len: 64, count: 1 }],
-        );
+        let p = plan(net("10.0.0.0/8"), &[Request::Floating(64)]);
         assert!(matches!(p.grants[0].outcome, Outcome::Impossible(_)));
     }
 

@@ -120,8 +120,8 @@ $ prefixtool 2001::/64
   Last address   2001::ffff:ffff:ffff:ffff
   Expanded       2001:0000:0000:0000:0000:0000:0000:0000
   Prefix length  /64  (64 host bits)
-  Addresses      18,446,744,073,709,551,616 (2^64, ~1.8e19)
-  Holds          65,536 x /80   4,294,967,296 x /96   281,474,976,710,656 x /112
+  Addresses      2^64 (~1.8e19)
+  Holds          65,536 x /80   4,294,967,296 x /96   2^48 x /112
   Reverse DNS    0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2.ip6.arpa
   Ranges         within 2001::/32 - Teredo (RFC 4380)
                  within 2000::/3 - Global unicast (RFC 4291)
@@ -166,12 +166,41 @@ Carve from 2001:db8::/52
   /64      2001:db8:0:100::/64  1 x /64
   /64      2001:db8:0:101::/64  1 x /64
 
-  Remaining      70,798,603,754,897,259,102,208 addresses in 10 blocks
+  Remaining      ~7.1e22 addresses in 10 blocks
   Largest block  2001:db8:0:800::/53  (2,048 x /64)
-    2001:db8:0:102::/63
-    2001:db8:0:104::/62
-    ...
+
+Map of 2001:db8::/52
+  -> 2001:db8::/56         carved
+  -> 2001:db8:0:100::/64   carved
+  -> 2001:db8:0:101::/64   carved
+     2001:db8:0:102::/63
+     2001:db8:0:104::/62
+     2001:db8:0:108::/61
+     ... 7 blocks, ~7.1e22 addresses (use --all)
 ```
+
+The map underneath shows the parent laid out block by block, with the
+allocations marked in place, so you can see where a carve landed rather than
+cross-referencing two lists by address:
+
+```
+$ prefixtool 2001:db8::/56 -2001:db8:0:cc::/64
+...
+Map of 2001:db8::/56
+     2001:db8::/57
+     2001:db8:0:80::/58
+     2001:db8:0:c0::/61
+     2001:db8:0:c8::/62
+  -> 2001:db8:0:cc::/64   carved
+     2001:db8:0:cd::/64
+     2001:db8:0:ce::/63
+     2001:db8:0:d0::/60
+     2001:db8:0:e0::/59
+```
+
+The allocations and the free blocks tile the parent exactly, so every address
+is accounted for on exactly one line. Long runs away from an allocation are
+elided into a line that still counts what it hid; `--all` shows everything.
 
 All carve operators in one invocation feed a single allocation run:
 
@@ -235,6 +264,18 @@ Lookup 2001:db8:0:3::5
   yes - inside 2001:db8::/52
   /64 -> 2001:db8:0:3::/64   (subnet #3)
 ```
+
+### Big numbers
+
+Past 2^32 the exact digit count stops being something anyone reads, so the
+report gives the power of two and an order of magnitude instead:
+
+```
+  Addresses      2^76 (~7.6e22)
+```
+
+`--json` is unaffected and still carries exact integers, so nothing is lost -
+`jq .addresses` gives all 23 digits.
 
 ### Colour
 

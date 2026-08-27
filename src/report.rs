@@ -177,12 +177,10 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
                         carve::MAX_REQUEST_COUNT
                     ));
                 }
-                // Expanded so each subnet gets its own line in the output.
+                // Expanded so each subnet gets its own outcome, and its own
+                // line in the output.
                 for _ in 0..*count {
-                    requests.push(Request::Floating {
-                        len: *len,
-                        count: 1,
-                    });
+                    requests.push(Request::Floating(*len));
                 }
             }
             Op::Exclude(target) => requests.push(Request::Fixed(*target)),
@@ -373,7 +371,7 @@ fn nth(parent: IpNet, len: u8, n: i64) -> Result<(u128, IpNet), String> {
     let too_far = || {
         format!(
             "@{n} is outside the {} subnets of /{len} in {parent}",
-            crate::num::Count::pow2(exp).grouped()
+            crate::num::Count::pow2(exp).short()
         )
     };
 

@@ -39,9 +39,44 @@ fn stdout(args: &[&str]) -> String {
 fn reports_on_a_bare_prefix() {
     let s = stdout(&["2001::/64"]);
     assert!(s.contains("2001::/64  -  IPv6"));
-    assert!(s.contains("18,446,744,073,709,551,616"));
+    assert!(s.contains("2^64 (~1.8e19)"));
     assert!(s.contains("Teredo"));
     assert!(s.contains("0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2.ip6.arpa"));
+}
+
+#[test]
+fn the_report_never_prints_a_wall_of_digits() {
+    // Anything past 2^32 is summarised, so no run of digits in the human
+    // report should be longer than the readable width allows.
+    for args in [
+        vec!["2001:db8::/52"],
+        vec!["::/0"],
+        vec!["::/0", "/128"],
+        vec!["2001:db8::/48", "-2001:db8:0:cc::/64"],
+        vec!["2001:db8::/52", "-56", "-64x2", "/64"],
+        vec!["2001:db8::/32", "+16", "/64"],
+    ] {
+        let s = stdout(&args);
+        for line in s.lines() {
+            let longest = line
+                .split(|c: char| !c.is_ascii_digit() && c != ',')
+                .map(|run| run.chars().filter(char::is_ascii_digit).count())
+                .max()
+                .unwrap_or(0);
+            assert!(longest <= 13, "{args:?} printed {longest} digits: {line:?}");
+        }
+    }
+}
+
+#[test]
+fn json_keeps_the_digits_the_report_drops() {
+    // The summarising is a reading aid, not a loss of precision.
+    let s = stdout(&["2001:db8::/52", "-56", "--json"]);
+    assert!(s.contains("\"addresses\": 75557863725914323419136"));
+    assert!(s.contains("\"free_addresses\": 70835497243044678205440"));
+    let report = stdout(&["2001:db8::/52", "-56"]);
+    assert!(!report.contains("75557863725914323419136"));
+    assert!(report.contains("2^76 (~7.6e22)"));
 }
 
 #[test]
@@ -139,6 +174,75 @@ fn stepping_off_the_address_space_exits_one() {
 }
 
 #[test]
+fn the_map_shows_where_a_carve_landed() {
+    let s = stdout(&["2001:db8::/56", "-2001:db8:0:cc::/64"]);
+    let map: Vec<&str> = s
+        .lines()
+        .skip_while(|l| !l.starts_with("Map of"))
+        .skip(1)
+        .take_while(|l| !l.is_empty())
+        .collect();
+    assert_eq!(
+        map,
+        vec![
+            "     2001:db8::/57",
+            "     2001:db8:0:80::/58",
+            "     2001:db8:0:c0::/61",
+            "     2001:db8:0:c8::/62",
+            "  -> 2001:db8:0:cc::/64   carved",
+            "     2001:db8:0:cd::/64",
+            "     2001:db8:0:ce::/63",
+            "     2001:db8:0:d0::/60",
+            "     2001:db8:0:e0::/59",
+        ]
+    );
+}
+
+#[test]
+fn the_map_elides_long_runs_but_never_the_carve() {
+    // The column width follows the widest visible row, so match the marker
+    // and the prefix rather than the exact spacing between them.
+    let carved = |s: &str| {
+        s.lines()
+            .any(|l| l.starts_with("  -> 2001:db8:0:cc::/64") && l.ends_with("carved"))
+    };
+
+    let s = stdout(&["2001:db8::/48", "-2001:db8:0:cc::/64"]);
+    assert!(carved(&s), "carve missing from the map: {s}");
+    assert!(s.contains("blocks, "), "no elision line: {s}");
+    assert!(s.contains("(use --all)"));
+
+    // --all shows every block, and then there is nothing left to elide.
+    let all = stdout(&["2001:db8::/48", "-2001:db8:0:cc::/64", "--all"]);
+    assert!(carved(&all), "carve missing under --all: {all}");
+    assert!(!all.contains("(use --all)"), "elided with --all: {all}");
+}
+
+#[test]
+fn the_map_covers_a_fully_allocated_parent() {
+    let s = stdout(&["10.0.0.0/24", "-24"]);
+    assert!(s.contains("fully allocated"));
+    assert!(s.contains("  -> 10.0.0.0/24   carved"), "no map: {s}");
+}
+
+#[test]
+fn the_map_is_suppressed_when_nothing_was_carved() {
+    // Everything failed, so the map would only repeat the free list.
+    let out = run(&["10.0.0.0/24", "-16"]);
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(!s.contains("Map of"), "pointless map: {s}");
+}
+
+#[test]
+fn the_map_reaches_json() {
+    let s = stdout(&["2001:db8::/56", "-2001:db8:0:cc::/64", "--json"]);
+    assert!(s.contains("\"map\": ["));
+    assert!(s.contains("\"prefix\": \"2001:db8:0:cc::/64\","));
+    assert!(s.contains("\"carved\": true"));
+    assert!(s.contains("\"carved\": false"));
+}
+
+#[test]
 fn colour_never_changes_the_layout() {
     // Escape sequences have no printed width but the formatter still counts
     // them, so anything padded before styling would silently skew a column.
@@ -155,6 +259,9 @@ fn colour_never_changes_the_layout() {
         ],
         vec!["10.0.0.0/16", "/24", "@1", "@-1", "^1", "+10.1.0.0/16"],
         vec!["10.0.0.0/24", "-24", "-30"],
+        vec!["2001:db8::/56", "-2001:db8:0:cc::/64"],
+        vec!["10.0.0.0/16", "-10.0.8.0/22", "-24x3"],
+        vec!["2001:db8::/48", "-2001:db8:0:cc::/64", "--all"],
         vec!["192.0.2.0/24"],
         vec!["2001::/64"],
     ] {
