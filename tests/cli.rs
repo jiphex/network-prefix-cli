@@ -10,6 +10,25 @@ fn run(args: &[&str]) -> Output {
         .expect("binary runs")
 }
 
+/// Remove ANSI SGR sequences, so styled and unstyled output can be compared.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        // ESC [ ... m
+        for c in chars.by_ref() {
+            if c == 'm' {
+                break;
+            }
+        }
+    }
+    out
+}
+
 fn stdout(args: &[&str]) -> String {
     let out = run(args);
     assert!(out.status.success(), "expected success from {args:?}");
@@ -117,6 +136,79 @@ fn stepping_off_the_address_space_exits_one() {
     let out = run(&["255.255.252.0/22", "^1"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("runs off"));
+}
+
+#[test]
+fn colour_never_changes_the_layout() {
+    // Escape sequences have no printed width but the formatter still counts
+    // them, so anything padded before styling would silently skew a column.
+    // Stripping the escapes must give back exactly the uncoloured report.
+    for args in [
+        vec!["2001:db8::/52", "-56", "-64x2", "/64"],
+        vec![
+            "10.0.0.0/16",
+            "-10.0.8.0/22",
+            "-24x4",
+            "/24",
+            "+8",
+            "=10.0.9.7",
+        ],
+        vec!["10.0.0.0/16", "/24", "@1", "@-1", "^1", "+10.1.0.0/16"],
+        vec!["10.0.0.0/24", "-24", "-30"],
+        vec!["192.0.2.0/24"],
+        vec!["2001::/64"],
+    ] {
+        let mut coloured = args.clone();
+        coloured.push("--color=always");
+        let mut plain = args.clone();
+        plain.push("--color=never");
+
+        let a = run(&coloured);
+        let b = run(&plain);
+        assert_eq!(
+            strip_ansi(&String::from_utf8_lossy(&a.stdout)),
+            String::from_utf8_lossy(&b.stdout),
+            "layout shifted for {args:?}"
+        );
+    }
+}
+
+#[test]
+fn colour_is_off_when_not_a_terminal() {
+    // The test harness captures stdout, so auto must decide against colour.
+    let s = stdout(&["192.0.2.0/24"]);
+    assert!(!s.contains('\x1b'), "auto coloured a pipe");
+}
+
+#[test]
+fn always_actually_colours() {
+    let s = stdout(&["192.0.2.0/24", "--color=always"]);
+    assert!(
+        s.contains("\x1b[1;36m192.0.2.0/24\x1b[0m"),
+        "prefix not styled"
+    );
+    // Documentation space is the one thing worth shouting about.
+    assert!(s.contains("\x1b[33m"), "caution not styled");
+}
+
+#[test]
+fn machine_output_is_never_coloured() {
+    for extra in [vec!["--json"], vec!["-q"]] {
+        let mut args = vec!["10.0.0.0/22", "/24", "--color=always"];
+        args.extend(extra);
+        let s = stdout(&args);
+        assert!(!s.contains('\x1b'), "escapes leaked into {args:?}");
+    }
+}
+
+#[test]
+fn no_color_env_var_is_respected() {
+    let out = Command::new(env!("CARGO_BIN_EXE_prefixtool"))
+        .args(["192.0.2.0/24"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("binary runs");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains('\x1b'));
 }
 
 #[test]
