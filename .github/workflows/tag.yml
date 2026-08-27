@@ -1,0 +1,94 @@
+# Cut a release by merging a pull request.
+#
+# Bump `version` in Cargo.toml on a branch, open a PR, get it approved and
+# merge it. When that lands on the default branch this creates the matching
+# v<version> tag and runs the release, so approving the PR is the act that
+# publishes. Nothing happens for a merge that does not change the version, and
+# nothing happens if the tag already exists, so re-running is harmless.
+#
+# To require a second, explicit approval before the tag is created, add
+# required reviewers to the "release" environment under
+# Settings -> Environments. Without that the environment imposes no gate.
+
+name: Tag
+
+on:
+  push:
+    branches: ["**"]
+    paths: ["Cargo.toml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Tag the version
+    # Only the default branch publishes. Comparing against the repository's
+    # own setting means renaming the default branch does not break this.
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      created: ${{ steps.tag.outputs.created }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Needed to read Cargo.toml as it was before the push, to tell a
+          # version bump apart from any other edit to the manifest.
+          fetch-depth: 0
+
+      - id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ -z "$version" ]; then
+            echo "::error::could not read a version from Cargo.toml"
+            exit 1
+          fi
+          tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          # Dependabot's cargo updates touch Cargo.toml too, so a change to
+          # the file is not on its own a release. Only a changed version is.
+          # A manual dispatch skips this and tags whatever is in the manifest.
+          before="${{ github.event.before }}"
+          zero="0000000000000000000000000000000000000000"
+          if [ "${{ github.event_name }}" = "push" ] && [ "$before" != "$zero" ] \
+             && git cat-file -e "$before^{commit}" 2> /dev/null; then
+            was=$(git show "$before:Cargo.toml" 2> /dev/null \
+                  | sed -n 's/^version = "\(.*\)"/\1/p' | head -1 || true)
+            if [ "$version" = "$was" ]; then
+              echo "created=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::version is still $version; not tagging"
+              exit 0
+            fi
+            echo "version went $was -> $version"
+          fi
+
+          if gh api "repos/$GH_REPO/git/ref/tags/$tag" > /dev/null 2>&1; then
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag already exists; nothing to do"
+            exit 0
+          fi
+
+          gh api --method POST "repos/$GH_REPO/git/refs" \
+            -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" > /dev/null
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::created $tag at $GITHUB_SHA"
+
+  release:
+    name: Release
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}

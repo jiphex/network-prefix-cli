@@ -30,12 +30,16 @@ tar xzf prefixtool-<tag>-aarch64-apple-darwin.tar.gz
 ./prefixtool --version
 ```
 
-If you downloaded through a browser and hit *"Apple could not verify..."*,
-clear the flag the browser added:
+If you downloaded through a browser and hit *"Apple could not verify..."*, the
+macOS archives bundle a script for it:
 
 ```
-xattr -d com.apple.quarantine prefixtool
+./macos-unquarantine.sh
 ```
+
+It clears the quarantine flag, repairs the ad-hoc signature if it needs it, and
+runs the binary to prove the result works. The equivalent by hand is
+`xattr -d com.apple.quarantine prefixtool`.
 
 Or build it yourself:
 
@@ -212,6 +216,27 @@ status code:
 $ prefixtool 10.0.0.0/24 -24 -30 >/dev/null; echo $?
 3
 ```
+
+## Releasing
+
+Releases are cut by merging a pull request, not by pushing a tag by hand:
+
+1. Bump `version` in `Cargo.toml` on a branch and open a PR.
+2. Get it approved and merge it.
+3. Landing on the default branch creates the matching `v<version>` tag and runs
+   the release, which builds all six targets and publishes them.
+
+Approving the PR is the act that publishes, so nothing reaches the releases
+page without a review. A merge that does not change the version is ignored
+(Dependabot's manifest updates included), and a version whose tag already
+exists is left alone, so re-running is harmless.
+
+Versions below `1.0.0`, and any version with a suffix such as `1.0.0-rc1`, are
+published as pre-releases.
+
+For a second, explicit approval before the tag is created, add required
+reviewers to the `release` environment under Settings -> Environments. Without
+that the environment imposes no gate.
 
 ## Tests
 

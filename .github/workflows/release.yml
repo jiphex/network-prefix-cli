@@ -8,6 +8,15 @@ on:
       tag:
         description: "Existing tag to build and release, e.g. v0.0.1"
         required: true
+  # Called by tag.yml. A tag created with GITHUB_TOKEN deliberately does not
+  # raise a push event, so the tagging workflow has to call this one directly
+  # rather than rely on the tag trigger above.
+  workflow_call:
+    inputs:
+      tag:
+        description: "Existing tag to build and release, e.g. v0.0.1"
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -144,6 +153,12 @@ jobs:
             cp "target/${{ matrix.target }}/release/$BIN" "staging/$name/"
           fi
           cp README.md LICENSE "staging/$name/"
+          # Ships only with the macOS archives, where Gatekeeper makes it
+          # necessary; it refuses to run anywhere else anyway.
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cp scripts/macos-unquarantine.sh "staging/$name/"
+            chmod +x "staging/$name/macos-unquarantine.sh"
+          fi
           if [ "${{ runner.os }}" = "Windows" ]; then
             (cd staging && 7z a -tzip "../dist/$name.zip" "$name") > /dev/null
           else
@@ -213,11 +228,13 @@ jobs:
             echo './prefixtool --version'
             echo '```'
             echo
-            echo "If you downloaded through a browser and hit \"Apple could not verify...\", clear the flag it added:"
+            echo "If you downloaded through a browser and hit \"Apple could not verify...\", the macOS archives bundle a script that sorts it out:"
             echo
             echo '```'
-            echo 'xattr -d com.apple.quarantine prefixtool'
+            echo './macos-unquarantine.sh'
             echo '```'
+            echo
+            echo "It clears the quarantine flag, repairs the ad-hoc signature if it needs it, and runs the binary to prove the result works."
             echo
             echo "Or build it yourself:"
             echo
