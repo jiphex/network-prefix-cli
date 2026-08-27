@@ -2,8 +2,9 @@
 
 use crate::num::Count;
 use crate::wellknown::{self, Match};
+use crate::zones;
 use ipnet::IpNet;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 
 pub struct Info {
     /// The prefix as the user typed it, if it needed normalising.
@@ -134,40 +135,13 @@ fn hosts(net: &IpNet) -> Option<Hosts> {
 }
 
 fn reverse_zone(net: &IpNet) -> Reverse {
-    match net.network() {
-        IpAddr::V4(a) => {
-            if !net.prefix_len().is_multiple_of(8) {
-                return Reverse::Unaligned(
-                    "not on an octet boundary - needs RFC 2317 classless delegation",
-                );
-            }
-            let octets = a.octets();
-            let take = usize::from(net.prefix_len() / 8);
-            let mut labels: Vec<String> = octets[..take].iter().map(|o| o.to_string()).collect();
-            labels.reverse();
-            labels.push("in-addr.arpa".into());
-            Reverse::Zone(labels.join("."))
+    match zones::name(net) {
+        Some(zone) => Reverse::Zone(zone),
+        None if net.addr().is_ipv4() => {
+            Reverse::Unaligned("not on an octet boundary - needs RFC 2317 classless delegation")
         }
-        IpAddr::V6(a) => {
-            if !net.prefix_len().is_multiple_of(4) {
-                return Reverse::Unaligned("not on a nibble boundary - no clean ip6.arpa zone");
-            }
-            let take = usize::from(net.prefix_len() / 4);
-            let nibbles = nibbles(a);
-            let mut labels: Vec<String> = nibbles[..take].iter().map(|n| n.to_string()).collect();
-            labels.reverse();
-            labels.push("ip6.arpa".into());
-            Reverse::Zone(labels.join("."))
-        }
+        None => Reverse::Unaligned("not on a nibble boundary - no clean ip6.arpa zone"),
     }
-}
-
-/// The 32 hex nibbles of an IPv6 address, most significant first.
-fn nibbles(addr: Ipv6Addr) -> Vec<char> {
-    addr.segments()
-        .iter()
-        .flat_map(|s| format!("{s:04x}").chars().collect::<Vec<_>>())
-        .collect()
 }
 
 #[cfg(test)]

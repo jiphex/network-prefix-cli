@@ -8,7 +8,7 @@ are easy to break here.
 
 ```
 cargo build
-cargo test --locked --all-targets      # 133 tests: 91 unit, 42 end-to-end
+cargo test --locked --all-targets      # 175 tests: 118 unit, 57 end-to-end
 cargo clippy --locked --all-targets
 cargo fmt --all --check
 ```
@@ -46,6 +46,7 @@ the repository, not a detail.
 | `num.rs` | Address counts as powers of two, and how they are written |
 | `style.rs` | Terminal colour |
 | `info.rs`, `wellknown.rs` | Facts about a single prefix |
+| `zones.rs` | Reverse DNS delegation zones, including RFC 2317 |
 | `json.rs` | A small JSON writer |
 
 ## Conventions the tests enforce
@@ -87,8 +88,23 @@ found real bugs when first written:
 - An aggregate **contains every input, and no spare block overlaps one**.
   Writing this exposed `+` aggregating pairwise, which listed a prefix the
   user had named as unused space.
+- A `%a:b:c` ratio's blocks **tile the space exactly**, over a ragged
+  remainder as well as a whole prefix, and `%1:1:...:1` produces the same
+  sizes as `%M`. The second one is what pins the rounding rule: a ratio is
+  rounded the same way a count already is, so there is one rule to explain
+  rather than two.
+- Filling from either end gives **mirror images**: `--from=top` reflects each
+  allocation about the middle of the parent. Both the block chosen and the
+  half taken when splitting down to it have to flip, and a test that only
+  checked one of those passes while allocations land at the wrong end.
 
 When adding an operator, reach for the property first.
+
+A `%a:b:c` ratio can be inexact for two unrelated reasons, and the report has
+to say which: the ratio itself may not be cuttable from any prefix (`2:1` -
+two thirds of a prefix is not a prefix), or the ratio may be fine and the
+space no longer a single block. `Shares::ratio_is_dyadic` is the test that
+separates them.
 
 ## Arithmetic traps
 
@@ -99,6 +115,11 @@ IPv6 sizes overflow the obvious types. Two cases have bitten and are covered:
 - `@-1` over `::/0` split into `/128`s needs index `2^128-1` against a count of
   `2^128`, which does not fit in a `u128` at all. Count back from the top
   instead of computing the count.
+- Sharing works in units of the smallest free block, so a ragged remainder
+  forces a very fine unit and the counts get large. They stay inside a `u128`
+  only because the doubling loop runs solely for a whole prefix, which starts
+  at one unit and stops as soon as it has enough. Do not widen its condition
+  without re-checking that.
 
 `num::Count` holds an exponent rather than a value for this reason.
 
@@ -106,7 +127,19 @@ IPv6 sizes overflow the obvious types. Two cases have bitten and are covered:
 
 Operator sigils must survive an unquoted shell. `*` is a glob, which is why
 `-64x2` exists alongside `-64*2`; `>` and `<` are redirection, which is why
-stepping is `^N`. `@`, `^`, `%`, `+`, `=` and `/` are all safe in bash and zsh.
+stepping is `^N`. `@`, `^`, `%`, `+`, `=`, `/`, `.` and `:` are all safe in
+bash and zsh. `~` is not, despite looking free: `~1` is directory-stack
+expansion in both shells.
+
+A new sigil has to be added to `looks_like_op` as well as to the grammar, or
+it will not survive being interleaved with flags.
+
+`:` is doing double duty, as the separator in `%a:b:c` and as the start of a
+carve's name, and IPv6 addresses are mostly colons. Two rules keep it
+unambiguous, and both have tests: a prefix length never contains a colon, so
+the *first* one starts a name there; and `-<prefix>` tries the whole payload
+as an address before splitting anything off, so `-2001:db8::1` stays an
+address rather than becoming `2001:db8:` named `1`.
 
 Flags and operators may be interleaved. `arrange()` in `main.rs` partitions
 argv before clap sees it, because clap would otherwise swallow `--json` into

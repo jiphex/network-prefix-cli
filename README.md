@@ -103,14 +103,17 @@ prefixtool [OPTIONS] <PREFIX> [OP]...
 | --- | --- |
 | `/N` | Split the prefix into `/N` subnets |
 | `%M` | Split it into `M` subnets, whatever lengths that needs |
+| `%a:b:c` | Share it out in that ratio |
 | `-N` | Carve one `/N` out of the prefix |
 | `-N*K`, `-NxK` | Carve `K` subnets of `/N` |
 | `-<prefix>` | Reserve one specific subnet, wherever it sits |
+| `-N:name`, `-<prefix>:name` | Name a carve, so the map reads as a plan |
 | `+N` | Show the enclosing `/N` supernet |
 | `+<prefix>` | Aggregate; several `+` make one aggregate covering them all |
 | `=<addr\|prefix>` | Ask whether an address or prefix falls inside |
 | `@N` | The Nth subnet of a requested split; `@-1` is the last |
 | `^N` | The prefix `N` blocks along at the same size; `^-1` is the previous |
+| `.` | The reverse DNS zones covering it; `.N` picks the boundary |
 
 Use the `x` form of a count (`-64x2`) in `zsh`, which otherwise tries to glob
 the `*`. Flags and operators can be given in any order.
@@ -121,6 +124,7 @@ the `*`. Flags and operators can be given in any order.
 | --- | --- |
 | `-n`, `--limit <N>` | Prefixes to list per section (default 8) |
 | `-a`, `--all` | List every prefix, however many there are |
+| `--from <end>` | Which end floating carves fill from: `bottom` (default) or `top` |
 | `-q`, `--quiet` | Print prefixes only, one per line, for piping |
 | `--json` | Emit a JSON object instead of a report |
 | `--color <when>` | `auto` (default), `always` or `never` |
@@ -223,6 +227,56 @@ one bit apart. When `M` is a power of two the result is the uniform split `/N`
 would have given. Like `/N`, a `%M` alongside a carve divides what the carve
 left over.
 
+### Splitting into a ratio
+
+`%M` shares the space equally. `%a:b:c` shares it out in proportion, which is
+the question you have when the parties are not equal - a regional site that
+needs twice what the branches do:
+
+```
+$ prefixtool 2001:db8::/48 %2:1:1
+...
+Share 2001:db8::/48 in the ratio 2:1:1
+  Ratio          2:1:1  as asked
+
+  Share 1  2 of 4 parts, 2^79 (~6.0e23) addresses, 1 block
+    2001:db8::/49
+
+  Share 2  1 of 4 parts, 2^78 (~3.0e23) addresses, 1 block
+    2001:db8:0:8000::/50
+
+  Share 3  1 of 4 parts, 2^78 (~3.0e23) addresses, 1 block
+    2001:db8:0:c000::/50
+```
+
+A share gets as many blocks as its portion needs; the shares tile the space
+exactly between them, and they come out in the order they were written.
+
+A ratio is exactly cuttable when its parts, reduced by their common factor, add
+up to a power of two. `2:1:1` is, and so is `3:1` and `6:2`. `2:1` is not -
+two thirds of a prefix is not a prefix - so it lands on the nearest aligned
+split and the report says which one that is rather than pretending:
+
+```
+$ prefixtool 10.0.0.0/24 %2:1
+...
+Share 10.0.0.0/24 in the ratio 2:1
+  Ratio          3:1  for a request of 2:1
+  Note           the nearest aligned split - an exact one needs shares that
+                 add up to a power of two once reduced
+
+  Share 1  2 of 3 parts, 192 addresses, 2 blocks
+    10.0.0.0/25
+    10.0.0.128/26
+
+  Share 2  1 of 3 parts, 64 addresses, 1 block
+    10.0.0.192/26
+```
+
+That is the same bargain `%M` already makes - `%3` hands three equal parties a
+half and two quarters - and `%1:1:1` and `%3` do in fact produce the same
+blocks. Like `%M`, a ratio alongside a carve shares out what the carve left.
+
 ### Carving
 
 ```
@@ -279,6 +333,64 @@ All carve operators in one invocation feed a single allocation run:
   large blocks whole for the large requests.
 - The leftovers are aggregated into the fewest possible prefixes.
 
+Any carve can be given a name, which turns the map from a picture into a plan
+somebody else can read:
+
+```
+$ prefixtool 10.0.0.0/16 -24:dmz -22:wifi -10.0.8.0/22:legacy
+...
+Carve from 10.0.0.0/16
+  Request      Assigned      Name    Size
+  /24          10.0.12.0/24  dmz     256 addresses, 254 usable
+  /22          10.0.0.0/22   wifi    1,024 addresses, 1,022 usable
+  10.0.8.0/22  10.0.8.0/22   legacy  1,024 addresses, 1,022 usable
+
+  Remaining      63,232 addresses in 7 blocks
+  Largest block  10.0.128.0/17  (32,768 addresses, 32,766 usable)
+
+Map of 10.0.0.0/16
+  -> 10.0.0.0/22    wifi
+     10.0.4.0/22
+  -> 10.0.8.0/22    legacy
+  -> 10.0.12.0/24   dmz
+     10.0.13.0/24
+     10.0.14.0/23
+     10.0.16.0/20
+     ... 3 blocks, 57,344 addresses (use --all)
+```
+
+The name column only appears when something was named. Names are letters,
+digits, `-`, `_` and `.`, so they need no quoting. On an IPv6 prefix the whole
+payload is read as an address first, so `-2001:db8::1` stays an address rather
+than becoming `2001:db8:` named `1`; write the length out (`-2001:db8::1/128:lo`)
+to name a host route.
+
+`--from=top` fills floating carves from the far end of the prefix instead.
+Infrastructure is usually taken down from the top so that it grows towards the
+customer allocations coming up from the bottom rather than into them:
+
+```
+$ prefixtool 10.0.0.0/16 -22:infra --from=top
+...
+Carve from 10.0.0.0/16, filling from the top
+  Request  Assigned       Name   Size
+  /22      10.0.252.0/22  infra  1,024 addresses, 1,022 usable
+
+  Remaining      64,512 addresses in 6 blocks
+  Largest block  10.0.0.0/17  (32,768 addresses, 32,766 usable)
+
+Map of 10.0.0.0/16
+     ... 3 blocks, 57,344 addresses (use --all)
+     10.0.224.0/20
+     10.0.240.0/21
+     10.0.248.0/22
+  -> 10.0.252.0/22   infra
+```
+
+It steers floating requests only: a fixed `-<prefix>` has nowhere else to go
+either way. Everything else is unchanged, and the two directions produce
+mirror images of each other.
+
 A `/N` split given alongside a carve describes the *remaining* space, which is
 usually the question you actually have:
 
@@ -333,6 +445,48 @@ $ prefixtool 2001:db8::/52 /64 @3 @-1 -q -n 0
 2001:db8:0:3::/64
 2001:db8:0:fff::/64
 ```
+
+### Reverse DNS zones
+
+The `Reverse DNS` line says whether the prefix is a zone. Often it is not, and
+then the question is which zones it actually is - the ones you have to go and
+create. `.` answers that:
+
+```
+$ prefixtool 10.0.0.0/22 .
+...
+Reverse zones for 10.0.0.0/22
+  Boundary       /24
+  Zones          4
+
+    0.0.10.in-addr.arpa
+    1.0.10.in-addr.arpa
+    2.0.10.in-addr.arpa
+    3.0.10.in-addr.arpa
+```
+
+`in-addr.arpa` splits on octets and `ip6.arpa` on nibbles, so the boundary is
+the next one at or below the prefix. `.N` cuts deeper instead, which is what
+you want when handing zones out with the prefixes - `.56` on a `/48` gives the
+256 zones the customer `/56`s need. Listings stay lazy, so `.64` on a `/32` is
+four billion zones and still prints the first one at once.
+
+An IPv4 prefix longer than a `/24` has no zone of its own, because the octet
+below it is the last boundary there is. RFC 2317 delegates one anyway, by
+pointing CNAMEs in the enclosing `/24` at a made-up sub-zone:
+
+```
+$ prefixtool 10.0.0.64/26 .
+...
+Reverse zones for 10.0.0.64/26
+  Parent zone    0.0.10.in-addr.arpa
+  Delegation     64/26.0.0.10.in-addr.arpa
+  Note           longer than a /24, so it has no zone of its own: RFC 2317 has
+                 0.0.10.in-addr.arpa CNAME 64-127 into the delegated zone
+```
+
+Under `--quiet` the zone names come out bare, one per line, so they can be fed
+straight into whatever creates them.
 
 ### Locating an address
 

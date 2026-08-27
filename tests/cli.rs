@@ -392,6 +392,17 @@ fn colour_never_changes_the_layout() {
         vec!["10.0.0.0/16", "/24", "@1", "@-1", "^1", "+10.1.0.0/16"],
         vec!["10.0.0.0/24", "%5"],
         vec!["10.0.0.0/22", "-24", "%5"],
+        vec!["10.0.0.0/24", "%3:1"],
+        vec!["10.0.0.0/24", "%2:1"],
+        vec!["10.0.0.0/16", "-10.0.8.0/22", "%2:1:1"],
+        vec!["10.0.0.0/8", "-30", "%2:1:1"],
+        vec!["10.0.0.0/22", "."],
+        vec!["10.0.0.64/26", "."],
+        vec!["2001:db8::/50", "."],
+        vec!["10.0.0.0/8", ".16"],
+        vec!["10.0.0.0/16", "-24:dmz", "-22:wifi", "-10.0.8.0/22:legacy"],
+        vec!["10.0.0.0/16", "-24:dmz", "-30"],
+        vec!["10.0.0.0/16", "-24x2", "--from=top"],
         vec!["10.0.0.0/24", "-24", "-30"],
         vec!["2001:db8::/56", "-2001:db8:0:cc::/64"],
         vec!["10.0.0.0/16", "-10.0.8.0/22", "-24x3"],
@@ -551,4 +562,181 @@ fn listing_the_whole_ipv6_space_streams_rather_than_hangs() {
         String::from_utf8_lossy(&out.stdout),
         "::/128\n::1/128\n::2/128\n"
     );
+}
+
+#[test]
+fn a_dot_lists_the_reverse_zones_a_prefix_needs() {
+    // The `Reverse DNS` line says a /22 is not a zone; `.` says which zones
+    // it actually is.
+    let s = stdout(&["10.0.0.0/22", "."]);
+    assert!(s.contains("not on an octet boundary"));
+    assert!(s.contains("Reverse zones for 10.0.0.0/22"));
+    assert!(s.contains("Boundary       /24"));
+    for zone in [
+        "0.0.10.in-addr.arpa",
+        "1.0.10.in-addr.arpa",
+        "2.0.10.in-addr.arpa",
+        "3.0.10.in-addr.arpa",
+    ] {
+        assert!(s.contains(zone), "missing {zone}");
+    }
+}
+
+#[test]
+fn a_dot_on_a_long_ipv4_prefix_explains_rfc_2317() {
+    let s = stdout(&["10.0.0.64/26", "."]);
+    assert!(s.contains("Parent zone    0.0.10.in-addr.arpa"));
+    assert!(s.contains("64/26.0.0.10.in-addr.arpa"));
+    assert!(s.contains("RFC 2317"));
+}
+
+#[test]
+fn a_dot_takes_a_delegation_boundary() {
+    let s = stdout(&["2001:db8::/48", ".56", "-q"]);
+    let lines: Vec<&str> = s.lines().collect();
+    assert_eq!(lines.len(), 8, "one per listed zone");
+    assert_eq!(lines[0], "0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa");
+    assert_eq!(lines[1], "1.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa");
+
+    // A boundary off a nibble is refused rather than rounded.
+    let out = run(&["2001:db8::/48", ".50"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("delegation boundary"));
+}
+
+#[test]
+fn zone_listings_stay_lazy() {
+    // 2^32 zones: the first must arrive without enumerating the rest.
+    let s = stdout(&["2001:db8::/32", ".64", "-q", "-n", "3"]);
+    assert_eq!(s.lines().count(), 3);
+    assert!(s.starts_with("0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"));
+}
+
+#[test]
+fn a_ratio_shares_the_space_out() {
+    let s = stdout(&["10.0.0.0/24", "%3:1"]);
+    assert!(s.contains("Share 10.0.0.0/24 in the ratio 3:1"));
+    assert!(s.contains("as asked"));
+    assert!(s.contains("10.0.0.0/25"));
+    assert!(s.contains("10.0.0.128/26"));
+    assert!(s.contains("10.0.0.192/26"));
+}
+
+#[test]
+fn a_ratio_that_cannot_be_cut_exactly_says_what_it_gave_instead() {
+    // Two thirds of a prefix is not a prefix, so 2:1 lands on 3:1 - the same
+    // bargain %3 makes when it hands out 2:1:1 for three equal parties.
+    let s = stdout(&["10.0.0.0/24", "%2:1"]);
+    assert!(s.contains("3:1  for a request of 2:1"));
+    assert!(s.contains("power of two"));
+}
+
+#[test]
+fn a_ratio_of_all_ones_matches_the_same_count_of_parts() {
+    let sizes = |args: &[&str]| {
+        let mut v: Vec<String> = stdout(args)
+            .lines()
+            .map(|l| l.split('/').nth(1).unwrap_or_default().to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        sizes(&["10.0.0.0/24", "%1:1:1", "-q"]),
+        sizes(&["10.0.0.0/24", "%3", "-q"])
+    );
+    assert_eq!(
+        sizes(&["10.0.0.0/24", "%1:1:1:1:1", "-q"]),
+        sizes(&["10.0.0.0/24", "%5", "-q"])
+    );
+}
+
+#[test]
+fn a_ratio_over_a_ragged_remainder_reads_as_percentages() {
+    // The unit that divides every piece of a carved-up /8 is fine enough that
+    // the achieved ratio has ten digits, which tells nobody anything.
+    let s = stdout(&["10.0.0.0/8", "-30", "%2:1:1"]);
+    assert!(s.contains("50.0% : 25.0% : 25.0%  for a request of 2:1:1"));
+    assert!(s.contains("it is no longer one block"));
+}
+
+#[test]
+fn a_ratio_the_space_cannot_hold_is_a_usage_error() {
+    let out = run(&["10.0.0.0/30", "%2:1:1:1"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be shared"));
+}
+
+#[test]
+fn a_named_carve_carries_its_name_into_the_table_and_the_map() {
+    let s = stdout(&["10.0.0.0/16", "-24:dmz", "-22:wifi", "-10.0.8.0/22:legacy"]);
+    assert!(s.contains("Name"));
+    assert!(s.contains("legacy"));
+    // The map says what each allocation is, rather than just "carved".
+    assert!(s.contains("-> 10.0.8.0/22    legacy"));
+    assert!(s.contains("wifi"));
+    assert!(s.contains("dmz"));
+    assert!(
+        !s.contains("carved"),
+        "a named map row should not say carved"
+    );
+}
+
+#[test]
+fn an_unnamed_carve_looks_exactly_as_it_did() {
+    let s = stdout(&["10.0.0.0/16", "-24"]);
+    assert!(!s.contains("Name"), "no name column without a name");
+    assert!(s.contains("carved"));
+}
+
+#[test]
+fn a_name_survives_a_prefix_full_of_colons() {
+    let s = stdout(&["2001:db8::/48", "-2001:db8:0:cc::/64:core", "-q"]);
+    assert_eq!(s.lines().next(), Some("2001:db8:0:cc::/64"));
+    let s = stdout(&["2001:db8::/48", "-2001:db8:0:cc::/64:core"]);
+    assert!(s.contains("core"));
+}
+
+#[test]
+fn from_top_fills_the_other_end() {
+    let bottom = stdout(&["10.0.0.0/16", "-24x2", "-q"]);
+    let top = stdout(&["10.0.0.0/16", "-24x2", "--from=top", "-q"]);
+    assert!(bottom.starts_with("10.0.0.0/24\n10.0.1.0/24\n"));
+    assert!(top.starts_with("10.0.255.0/24\n10.0.254.0/24\n"));
+    assert!(stdout(&["10.0.0.0/16", "-24", "--from=top"]).contains("filling from the top"));
+}
+
+#[test]
+fn from_top_may_be_given_among_the_operators() {
+    // arrange() has to keep --from out of the operator list like any flag.
+    let s = stdout(&["10.0.0.0/16", "-24", "--from", "top", "-q"]);
+    assert_eq!(s.lines().next(), Some("10.0.255.0/24"));
+}
+
+#[test]
+fn the_newest_operators_reach_json() {
+    let s = stdout(&[
+        "10.0.0.0/22",
+        ".",
+        "%2:1:1",
+        "-24:dmz",
+        "--from=top",
+        "--json",
+    ]);
+    for key in [
+        "\"reverse_zones\"",
+        "\"kind\": \"aligned\"",
+        "\"boundary\": 24",
+        "\"shares\"",
+        "\"achieved\"",
+        "\"exact\"",
+        "\"direction\": \"top\"",
+        "\"name\": \"dmz\"",
+    ] {
+        assert!(s.contains(key), "missing {key} from --json");
+    }
+    // Classless delegations get their own shape.
+    let s = stdout(&["10.0.0.64/26", ".", "--json"]);
+    assert!(s.contains("\"kind\": \"classless\""));
+    assert!(s.contains("\"rfc\": \"RFC 2317\""));
 }
