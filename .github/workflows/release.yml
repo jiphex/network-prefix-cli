@@ -160,11 +160,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # Deliberately does not check out the repository. Everything this job
+    # needs is either an artifact or a workflow expression, and checking out
+    # the tag made publishing fail if the tag moved or was deleted while the
+    # six build jobs were still running.
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.verify.outputs.tag }}
-
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -209,8 +209,14 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          # Without a checkout there is no git remote for gh to infer from.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.verify.outputs.tag }}
           PRE: ${{ needs.verify.outputs.prerelease }}
+          # Anchors the release to the commit this run actually built. Ignored
+          # when the tag still exists, and recreates it at the right commit if
+          # it does not.
+          TARGET: ${{ github.sha }}
         run: |
           set -euo pipefail
           # Idempotent, so re-running the workflow for a tag refreshes assets
@@ -220,7 +226,8 @@ jobs:
             gh release edit "$TAG" --title "$TAG" --notes-file notes.md --prerelease="$PRE"
             gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" --title "$TAG" --notes-file notes.md --prerelease="$PRE" dist/*
+            gh release create "$TAG" --target "$TARGET" --title "$TAG" \
+              --notes-file notes.md --prerelease="$PRE" dist/*
           fi
           gh release view "$TAG" --json tagName,isPrerelease,assets \
             --jq '"published \(.tagName) prerelease=\(.isPrerelease) assets=\(.assets|length)"' 
