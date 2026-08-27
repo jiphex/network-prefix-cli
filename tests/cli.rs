@@ -39,9 +39,44 @@ fn stdout(args: &[&str]) -> String {
 fn reports_on_a_bare_prefix() {
     let s = stdout(&["2001::/64"]);
     assert!(s.contains("2001::/64  -  IPv6"));
-    assert!(s.contains("18,446,744,073,709,551,616"));
+    assert!(s.contains("2^64 (~1.8e19)"));
     assert!(s.contains("Teredo"));
     assert!(s.contains("0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2.ip6.arpa"));
+}
+
+#[test]
+fn the_report_never_prints_a_wall_of_digits() {
+    // Anything past 2^32 is summarised, so no run of digits in the human
+    // report should be longer than the readable width allows.
+    for args in [
+        vec!["2001:db8::/52"],
+        vec!["::/0"],
+        vec!["::/0", "/128"],
+        vec!["2001:db8::/48", "-2001:db8:0:cc::/64"],
+        vec!["2001:db8::/52", "-56", "-64x2", "/64"],
+        vec!["2001:db8::/32", "+16", "/64"],
+    ] {
+        let s = stdout(&args);
+        for line in s.lines() {
+            let longest = line
+                .split(|c: char| !c.is_ascii_digit() && c != ',')
+                .map(|run| run.chars().filter(char::is_ascii_digit).count())
+                .max()
+                .unwrap_or(0);
+            assert!(longest <= 13, "{args:?} printed {longest} digits: {line:?}");
+        }
+    }
+}
+
+#[test]
+fn json_keeps_the_digits_the_report_drops() {
+    // The summarising is a reading aid, not a loss of precision.
+    let s = stdout(&["2001:db8::/52", "-56", "--json"]);
+    assert!(s.contains("\"addresses\": 75557863725914323419136"));
+    assert!(s.contains("\"free_addresses\": 70835497243044678205440"));
+    let report = stdout(&["2001:db8::/52", "-56"]);
+    assert!(!report.contains("75557863725914323419136"));
+    assert!(report.contains("2^76 (~7.6e22)"));
 }
 
 #[test]

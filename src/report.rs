@@ -371,7 +371,7 @@ fn nth(parent: IpNet, len: u8, n: i64) -> Result<(u128, IpNet), String> {
     let too_far = || {
         format!(
             "@{n} is outside the {} subnets of /{len} in {parent}",
-            crate::num::Count::pow2(exp).grouped()
+            crate::num::Count::pow2(exp).short()
         )
     };
 

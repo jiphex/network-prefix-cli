@@ -87,7 +87,7 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
             .iter()
             .filter_map(|len| {
                 i.subnet_count(*len)
-                    .map(|c| format!("{} x /{len}", c.grouped()))
+                    .map(|c| format!("{} x /{len}", c.short()))
             })
             .collect();
         field(w, o, "Holds", &parts.join("   "))?;
@@ -119,7 +119,7 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
             w,
             "  {}   holds {} x /{}",
             o.style.prefix(&s.net.to_string()),
-            s.siblings.grouped(),
+            s.siblings.short(),
             i.net.prefix_len()
         )?;
     }
@@ -281,7 +281,7 @@ fn carve_section(w: &mut impl Write, plan: &Plan, o: &Opts) -> io::Result<()> {
     writeln!(
         w,
         "  Remaining      {} address{} in {} block{}",
-        num::sum_grouped(&counts),
+        num::describe_sum(&counts),
         if counts.len() == 1 && counts[0].as_u128() == Some(1) {
             ""
         } else {
@@ -382,7 +382,7 @@ fn flush_elided(w: &mut impl Write, o: &Opts, elided: &mut Vec<IpNet>) -> io::Re
         "     ... {} block{}, {} addresses (use --all)",
         elided.len(),
         if elided.len() == 1 { "" } else { "s" },
-        num::sum_grouped(&counts)
+        num::describe_sum(&counts)
     );
     elided.clear();
     writeln!(w, "{}", o.style.dim(&line))
@@ -407,7 +407,7 @@ fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Re
         return Ok(());
     }
     let counts = s.counts();
-    field(w, o, "Subnets", &num::sum_grouped(&counts))?;
+    field(w, o, "Subnets", &num::describe_sum(&counts))?;
     if let (Some(first), Some(last)) = (s.first(), s.last()) {
         field(w, o, "First", &first.to_string())?;
         field(w, o, "Last", &last.to_string())?;
@@ -431,7 +431,7 @@ fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Re
     }
     writeln!(w)?;
     let shown = list(w, s.subnets(), o, "    ")?;
-    let total = num::sum_grouped(&counts);
+    let total = num::describe_sum(&counts);
     if !o.all && shown == o.take() {
         writeln!(
             w,
@@ -485,14 +485,14 @@ fn size_hint(net: &IpNet) -> String {
             31 => "2 addresses".into(),
             _ => format!(
                 "{} addresses, {} usable",
-                count.grouped(),
+                count.short(),
                 num::group(&(count.as_u128().unwrap_or(0) - 2).to_string())
             ),
         };
     }
     match net.prefix_len() {
         128 => "1 address".into(),
-        len if len < 64 => format!("{} x /64", Count::pow2(u32::from(64 - len)).grouped()),
+        len if len < 64 => format!("{} x /64", Count::pow2(u32::from(64 - len)).short()),
         64 => "1 x /64".into(),
         _ => format!("{} addresses", Count::pow2(host_bits).describe()),
     }
