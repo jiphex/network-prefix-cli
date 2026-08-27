@@ -279,11 +279,16 @@ Lookup 2001:db8:0:3::5
 ### Big numbers
 
 Past 2^32 the exact digit count stops being something anyone reads, so the
-report gives the power of two and an order of magnitude instead:
+report gives the width in bits and an order of magnitude instead:
 
 ```
   Addresses      2^76 (~7.6e22)
+  Remaining      ~2^96 (~7.9e28) addresses in 32 blocks
 ```
+
+A total that is not itself a power of two still has a width worth reading - a
+/32 less a /64 is 2^96 for every practical purpose - so it is reported with a
+tilde to mark the rounding.
 
 `--json` is unaffected and still carries exact integers, so nothing is lost -
 `jq .addresses` gives all 23 digits.
