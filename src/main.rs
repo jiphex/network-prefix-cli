@@ -21,7 +21,7 @@ OPERATORS:
   -N*K, -NxK    carve K subnets of /N (use the x form to keep zsh happy)
   -<prefix>     reserve one specific subnet, wherever it sits
   +N            show the enclosing /N supernet
-  +<prefix>     the smallest prefix holding both this one and that
+  +<prefix>     aggregate; several of these make one aggregate, not a pair each
   =<addr|net>   ask whether an address or prefix falls inside
   @N            the Nth subnet of a requested split; @-1 is the last
   ^N            the prefix N blocks along at the same size; ^-1 is previous

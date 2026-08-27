@@ -91,10 +91,17 @@ pub fn describe_sum(counts: &[Count]) -> String {
             let exp = total.trailing_zeros();
             format!("2^{exp} (~{})", Count::pow2(exp).approx())
         }
-        _ => format!(
-            "~{}",
-            scientific(log2_sum(counts) * std::f64::consts::LOG10_2)
-        ),
+        // A ragged total still has a width in bits, which is the figure a
+        // network engineer reasons in - a /32 less a /64 is 2^96 for every
+        // practical purpose. The tilde marks it as the rounding it is.
+        _ => {
+            let log2 = log2_sum(counts);
+            format!(
+                "~2^{} (~{})",
+                log2.round() as i64,
+                scientific(log2 * std::f64::consts::LOG10_2)
+            )
+        }
     }
 }
 
@@ -249,10 +256,25 @@ mod tests {
             describe_sum(&[Count::pow2(32), Count::pow2(32)]),
             "2^33 (~8.6e9)"
         );
-        // A ragged total gets an order of magnitude. 2^75 + 2^74 is 5.7e22.
-        assert_eq!(describe_sum(&[Count::pow2(75), Count::pow2(74)]), "~5.7e22");
+        // A ragged total reports its width in bits as well as its magnitude.
+        // 2^75 + 2^74 is 1.5 x 2^75, which rounds to 2^76.
+        assert_eq!(
+            describe_sum(&[Count::pow2(75), Count::pow2(74)]),
+            "~2^76 (~5.7e22)"
+        );
         // A single block describes itself even past what a u128 can total.
         assert_eq!(describe_sum(&[Count::pow2(128)]), "2^128 (~3.4e38)");
+    }
+
+    #[test]
+    fn a_carve_remainder_reports_the_parent_width() {
+        // A /32 with one /64 taken out leaves the buddy chain: one block at
+        // each length from /33 down to /64, so sizes 2^95 down to 2^64. That
+        // totals 2^96 - 2^64, which is 2^96 to any useful precision, and 2^96
+        // is the figure worth reading rather than 7.9e28 on its own.
+        let blocks: Vec<Count> = (64..=95).map(Count::pow2).collect();
+        assert_eq!(blocks.len(), 32, "the carve reports 32 blocks");
+        assert_eq!(describe_sum(&blocks), "~2^96 (~7.9e28)");
     }
 
     #[test]

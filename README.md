@@ -82,7 +82,7 @@ prefixtool [OPTIONS] <PREFIX> [OP]...
 | `-N*K`, `-NxK` | Carve `K` subnets of `/N` |
 | `-<prefix>` | Reserve one specific subnet, wherever it sits |
 | `+N` | Show the enclosing `/N` supernet |
-| `+<prefix>` | The smallest prefix holding both this one and that |
+| `+<prefix>` | Aggregate; several `+` make one aggregate covering them all |
 | `=<addr\|prefix>` | Ask whether an address or prefix falls inside |
 | `@N` | The Nth subnet of a requested split; `@-1` is the last |
 | `^N` | The prefix `N` blocks along at the same size; `^-1` is the previous |
@@ -235,8 +235,19 @@ Aggregate 10.0.0.0/24 with 10.0.3.0/24
     10.0.2.0/24
 ```
 
-Two siblings aggregate exactly and say so; a prefix that already contains the
-other is reported as such rather than pretending to combine anything.
+Inputs that fill the aggregate between them say so; one that already contains
+the others is reported as such rather than pretending to combine anything.
+
+Several `+` operators describe a single aggregate covering all of them, rather
+than one pairing per operator:
+
+```
+$ prefixtool 10.0.0.0/24 +10.0.1.0/24 +10.1.0.0/16
+...
+Aggregate 10.0.0.0/24 with 10.0.1.0/24 and 10.1.0.0/16
+  Smallest       10.0.0.0/15  (131,072 addresses, 131,070 usable)
+  Also covers    7 blocks no input uses
+```
 
 `^N` walks along at the same size, which is what you want when handing out
 blocks in order:
@@ -268,11 +279,16 @@ Lookup 2001:db8:0:3::5
 ### Big numbers
 
 Past 2^32 the exact digit count stops being something anyone reads, so the
-report gives the power of two and an order of magnitude instead:
+report gives the width in bits and an order of magnitude instead:
 
 ```
   Addresses      2^76 (~7.6e22)
+  Remaining      ~2^96 (~7.9e28) addresses in 32 blocks
 ```
+
+A total that is not itself a power of two still has a width worth reading - a
+/32 less a /64 is 2^96 for every practical purpose - so it is reported with a
+tilde to mark the rounding.
 
 `--json` is unaffected and still carries exact integers, so nothing is lost -
 `jq .addresses` gives all 23 digits.

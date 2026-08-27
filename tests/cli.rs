@@ -141,12 +141,103 @@ fn aggregates_two_prefixes() {
     let s = stdout(&["10.0.0.0/24", "+10.0.1.0/24"]);
     assert!(s.contains("Aggregate 10.0.0.0/24 with 10.0.1.0/24"));
     assert!(s.contains("10.0.0.0/23"));
-    assert!(s.contains("siblings"));
+    assert!(s.contains("exact"));
 
     let s = stdout(&["10.0.0.0/24", "+10.0.3.0/24"]);
     assert!(s.contains("10.0.0.0/22"));
     assert!(s.contains("10.0.1.0/24"));
     assert!(s.contains("10.0.2.0/24"));
+}
+
+#[test]
+fn several_pluses_aggregate_together_not_pairwise() {
+    let s = stdout(&["10.0.0.0/24", "+10.0.1.0/24", "+10.1.0.0/16"]);
+
+    // One aggregate covering everything, not one pairing per operator.
+    assert_eq!(s.matches("Aggregate ").count(), 1, "{s}");
+    assert!(s.contains("Aggregate 10.0.0.0/24 with 10.0.1.0/24 and 10.1.0.0/16"));
+    assert!(s.contains("10.0.0.0/15"));
+
+    // A prefix the user named is not spare space.
+    let spare: Vec<&str> = s
+        .lines()
+        .skip_while(|l| !l.contains("Also covers"))
+        .skip(1)
+        .take_while(|l| l.starts_with("    "))
+        .collect();
+    assert!(
+        !spare.iter().any(|l| l.contains("10.0.1.0/24")),
+        "a named prefix was listed as unused: {spare:?}"
+    );
+    assert_eq!(spare.len(), 7);
+}
+
+#[test]
+fn a_truncated_list_says_so() {
+    // The aggregate's spare blocks were cut to the limit silently, hiding
+    // dozens of blocks with nothing on screen to suggest they existed.
+    let s = stdout(&["2001:db8::/56", "+2001:db8:ff::/64", "+2001:db8:ffff::/64"]);
+    assert!(s.contains("76 blocks no input uses"));
+    assert!(
+        s.contains("... (showing 8 of 76; use --all or -n N)"),
+        "no truncation hint: {s}"
+    );
+
+    // --all shows the lot, and then there is nothing to announce.
+    let all = stdout(&[
+        "2001:db8::/56",
+        "+2001:db8:ff::/64",
+        "+2001:db8:ffff::/64",
+        "--all",
+    ]);
+    assert!(!all.contains("showing"), "hinted with --all: {all}");
+    let listed = all
+        .lines()
+        .skip_while(|l| !l.contains("Also covers"))
+        .skip(1)
+        .take_while(|l| l.starts_with("    "))
+        .count();
+    assert_eq!(listed, 76, "--all did not list every block");
+}
+
+#[test]
+fn a_list_exactly_the_limit_long_is_not_called_truncated() {
+    // 8 subnets shown out of 8 is a complete list, not a cut-off one.
+    let s = stdout(&["10.0.0.0/21", "/24", "-n", "8"]);
+    assert!(s.contains("10.0.7.0/24"));
+    assert!(!s.contains("showing"), "claimed truncation: {s}");
+
+    // One more than the limit really is truncated.
+    let s = stdout(&["10.0.0.0/20", "/24", "-n", "8"]);
+    assert!(
+        s.contains("... (showing 8 of 16; use --all or -n N)"),
+        "{s}"
+    );
+}
+
+#[test]
+fn quiet_output_never_carries_a_hint() {
+    for args in [
+        vec!["10.0.0.0/20", "/24", "-q", "-n", "2"],
+        vec!["2001:db8::/56", "+2001:db8:ffff::/64", "-q", "-n", "2"],
+    ] {
+        let s = stdout(&args);
+        assert!(!s.contains("showing"), "{args:?} hinted: {s}");
+        assert!(!s.contains("use --all"), "{args:?} hinted: {s}");
+    }
+}
+
+#[test]
+fn aggregate_inputs_reach_json_as_a_list() {
+    let s = stdout(&["10.0.0.0/24", "+10.0.1.0/24", "+10.1.0.0/16", "--json"]);
+    let with = s
+        .lines()
+        .skip_while(|l| !l.contains("\"with\""))
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(with.contains("10.0.1.0/24"), "{with}");
+    assert!(with.contains("10.1.0.0/16"), "{with}");
 }
 
 #[test]
