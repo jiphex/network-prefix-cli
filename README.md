@@ -87,7 +87,10 @@ prefixtool [OPTIONS] <PREFIX> [OP]...
 | `-N*K`, `-NxK` | Carve `K` subnets of `/N` |
 | `-<prefix>` | Reserve one specific subnet, wherever it sits |
 | `+N` | Show the enclosing `/N` supernet |
+| `+<prefix>` | The smallest prefix holding both this one and that |
 | `=<addr\|prefix>` | Ask whether an address or prefix falls inside |
+| `@N` | The Nth subnet of a requested split; `@-1` is the last |
+| `^N` | The prefix `N` blocks along at the same size; `^-1` is the previous |
 
 Use the `x` form of a count (`-64x2`) in `zsh`, which otherwise tries to glob
 the `*`. Flags and operators can be given in any order.
@@ -191,6 +194,40 @@ $ prefixtool 10.0.0.0/16 -10.0.8.0/22 -24x4 /24
 ...
 Split the remaining space into /24 (5 free blocks)
   Subnets        248
+```
+
+### Aggregating, stepping and picking
+
+`+<prefix>` answers "can these two be combined, and what does it cost?"
+
+```
+$ prefixtool 10.0.0.0/24 +10.0.3.0/24
+...
+Aggregate 10.0.0.0/24 with 10.0.3.0/24
+  Smallest       10.0.0.0/22  (1,024 addresses, 1,022 usable)
+  Also covers    2 blocks neither prefix uses
+    10.0.1.0/24
+    10.0.2.0/24
+```
+
+Two siblings aggregate exactly and say so; a prefix that already contains the
+other is reported as such rather than pretending to combine anything.
+
+`^N` walks along at the same size, which is what you want when handing out
+blocks in order:
+
+```
+$ prefixtool 10.0.4.0/22 ^1 -q
+10.0.8.0/22
+```
+
+`@N` is the inverse of `=`: rather than asking which subnet an address is in,
+it asks for a subnet by number. Negative counts back from the end.
+
+```
+$ prefixtool 2001:db8::/52 /64 @3 @-1 -q -n 0
+2001:db8:0:3::/64
+2001:db8:0:fff::/64
 ```
 
 ### Locating an address

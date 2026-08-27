@@ -109,6 +109,52 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         )?;
     }
 
+    for a in &r.aggregates {
+        writeln!(w, "\nAggregate {} with {}", i.net, a.with)?;
+        field(
+            w,
+            "Smallest",
+            &format!("{}  ({})", a.net, size_hint(&a.net)),
+        )?;
+        if a.nested {
+            let inner = if a.net == a.with { i.net } else { a.with };
+            field(w, "Note", &format!("{} already contains {inner}", a.net))?;
+        } else if a.exact {
+            field(
+                w,
+                "Note",
+                "exact - the two are siblings, nothing else is covered",
+            )?;
+        } else {
+            field(
+                w,
+                "Also covers",
+                &format!(
+                    "{} block{} neither prefix uses",
+                    a.spare.len(),
+                    if a.spare.len() == 1 { "" } else { "s" }
+                ),
+            )?;
+            list(w, a.spare.iter().copied(), o, "    ")?;
+        }
+    }
+
+    for n in &r.neighbours {
+        let sign = if n.step >= 0 { "+" } else { "" };
+        writeln!(w, "\nStep {sign}{}", n.step)?;
+        writeln!(w, "  {}   {}", n.net, size_hint(&n.net))?;
+    }
+
+    for p in &r.picks {
+        writeln!(w, "\nSubnet @{} of /{}", p.index, p.len)?;
+        writeln!(
+            w,
+            "  {}   (index {})",
+            p.net,
+            num::group(&p.resolved.to_string())
+        )?;
+    }
+
     for l in &r.lookups {
         writeln!(w, "\nLookup {}", l.target)?;
         if !l.inside {
@@ -314,6 +360,15 @@ pub fn quiet(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
     for s in &r.supernets {
         writeln!(w, "{}", s.net)?;
     }
+    for a in &r.aggregates {
+        writeln!(w, "{}", a.net)?;
+    }
+    for n in &r.neighbours {
+        writeln!(w, "{}", n.net)?;
+    }
+    for p in &r.picks {
+        writeln!(w, "{}", p.net)?;
+    }
     for l in &r.lookups {
         for (_, sub, _) in &l.positions {
             writeln!(w, "{sub}")?;
@@ -331,7 +386,14 @@ pub fn quiet(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         list(w, s.subnets(), o, "")?;
     }
     // With no operators at all, the prefix itself is the useful output.
-    if r.supernets.is_empty() && r.lookups.is_empty() && r.carve.is_none() && r.splits.is_empty() {
+    if r.supernets.is_empty()
+        && r.aggregates.is_empty()
+        && r.neighbours.is_empty()
+        && r.picks.is_empty()
+        && r.lookups.is_empty()
+        && r.carve.is_none()
+        && r.splits.is_empty()
+    {
         writeln!(w, "{}", r.info.net)?;
     }
     Ok(())
@@ -450,6 +512,66 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                                         .collect(),
                                 ),
                             ),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ));
+    }
+
+    if !r.aggregates.is_empty() {
+        fields.push((
+            "aggregates",
+            J::Arr(
+                r.aggregates
+                    .iter()
+                    .map(|a| {
+                        J::Obj(vec![
+                            ("with", json::s(a.with.to_string())),
+                            ("prefix", json::s(a.net.to_string())),
+                            ("prefix_length", json::n(a.net.prefix_len())),
+                            ("exact", J::Bool(a.exact)),
+                            ("nested", J::Bool(a.nested)),
+                            (
+                                "spare",
+                                J::Arr(a.spare.iter().map(|n| json::s(n.to_string())).collect()),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ));
+    }
+
+    if !r.neighbours.is_empty() {
+        fields.push((
+            "neighbours",
+            J::Arr(
+                r.neighbours
+                    .iter()
+                    .map(|n| {
+                        J::Obj(vec![
+                            ("step", json::n(n.step)),
+                            ("prefix", json::s(n.net.to_string())),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ));
+    }
+
+    if !r.picks.is_empty() {
+        fields.push((
+            "picks",
+            J::Arr(
+                r.picks
+                    .iter()
+                    .map(|p| {
+                        J::Obj(vec![
+                            ("index", json::n(p.index)),
+                            ("resolved_index", json::n(p.resolved)),
+                            ("prefix_length", json::n(p.len)),
+                            ("subnet", json::s(p.net.to_string())),
                         ])
                     })
                     .collect(),

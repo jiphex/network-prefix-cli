@@ -7,7 +7,10 @@
 //!   -64*2      carve two /64s  (-64x2 is the same thing, and survives zsh)
 //!   -10.0.1.0/24   carve out that exact subnet
 //!   +48        show the enclosing /48
+//!   +10.1.0.0/16   aggregate with that prefix
 //!   =10.0.1.5  ask whether an address or prefix falls inside
+//!   @3         the 3rd subnet of the requested split (@-1 is the last)
+//!   ^1         the next prefix of the same size (^-1 is the previous)
 //! ```
 
 use ipnet::IpNet;
@@ -24,8 +27,16 @@ pub enum Op {
     Exclude(IpNet),
     /// `+N` - the enclosing prefix of length N.
     Supernet(u8),
+    /// `+<prefix>` - the smallest prefix holding both.
+    Aggregate(IpNet),
     /// `=<addr|prefix>` - containment test.
     Contains(Target),
+    /// `@N` - the Nth subnet of a requested split, counting from zero.
+    /// Negative counts back from the end, so `@-1` is the last.
+    Nth(i64),
+    /// `^N` - the prefix N blocks along at the same length. Negative walks
+    /// backwards, so `^-1` is the previous block.
+    Step(i64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,8 +73,17 @@ pub fn parse(token: &str) -> Result<Op, String> {
 
     match sigil {
         "/" => Ok(Op::Split(prefix_len(rest)?)),
-        "+" => Ok(Op::Supernet(prefix_len(rest)?)),
+        // `+` takes either a length or a prefix, the same way `-` does.
+        "+" => {
+            if looks_like_address(rest) {
+                Ok(Op::Aggregate(parse_net(rest)?))
+            } else {
+                Ok(Op::Supernet(prefix_len(rest)?))
+            }
+        }
         "=" => Ok(Op::Contains(target(rest)?)),
+        "@" => Ok(Op::Nth(index(rest, "subnet index")?)),
+        "^" => Ok(Op::Step(index(rest, "step")?)),
         "-" => {
             if looks_like_address(rest) {
                 let net = parse_net(rest)?;
@@ -111,6 +131,12 @@ fn target(s: &str) -> Result<Target, String> {
     Ok(Target::Net(parse_net(s)?))
 }
 
+fn index(s: &str, what: &str) -> Result<i64, String> {
+    // `+3` reads naturally next to `-3`, but i64 will not parse the plus.
+    let s = s.strip_prefix('+').unwrap_or(s);
+    s.parse().map_err(|_| format!("'{s}' is not a {what}"))
+}
+
 fn prefix_len(s: &str) -> Result<u8, String> {
     let n: u16 = s
         .parse()
@@ -129,7 +155,7 @@ fn prefix_len(s: &str) -> Result<u8, String> {
 /// still reach `parse` and get a useful error rather than "unexpected
 /// argument".
 pub fn looks_like_op(token: &str) -> bool {
-    let Some(rest) = token.strip_prefix(['/', '+', '=', '-']) else {
+    let Some(rest) = token.strip_prefix(['/', '+', '=', '-', '@', '^']) else {
         return false;
     };
     if !token.starts_with('-') {
@@ -188,6 +214,38 @@ mod tests {
             p("=10.0.1.0/24"),
             Op::Contains(Target::Net("10.0.1.0/24".parse().unwrap()))
         );
+    }
+
+    #[test]
+    fn plus_takes_either_a_length_or_a_prefix() {
+        assert_eq!(p("+48"), Op::Supernet(48));
+        assert_eq!(p("+/48"), Op::Supernet(48));
+        assert_eq!(
+            p("+10.1.0.0/16"),
+            Op::Aggregate("10.1.0.0/16".parse().unwrap())
+        );
+        assert_eq!(
+            p("+2001:db8:1::/48"),
+            Op::Aggregate("2001:db8:1::/48".parse().unwrap())
+        );
+        // A bare address aggregates as a host route.
+        assert_eq!(
+            p("+10.1.2.3"),
+            Op::Aggregate("10.1.2.3/32".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn nth_and_step_take_signed_indexes() {
+        assert_eq!(p("@0"), Op::Nth(0));
+        assert_eq!(p("@3"), Op::Nth(3));
+        assert_eq!(p("@-1"), Op::Nth(-1));
+        assert_eq!(p("^1"), Op::Step(1));
+        assert_eq!(p("^+1"), Op::Step(1));
+        assert_eq!(p("^-2"), Op::Step(-2));
+        assert!(parse("@").is_err());
+        assert!(parse("@two").is_err());
+        assert!(parse("^one").is_err());
     }
 
     #[test]

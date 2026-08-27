@@ -71,6 +71,55 @@ fn json_output_carries_the_exact_address_count() {
 }
 
 #[test]
+fn picks_a_subnet_by_number() {
+    let s = stdout(&["2001:db8::/52", "/64", "@3", "@-1", "-q", "-n", "0"]);
+    assert_eq!(s, "2001:db8:0:3::/64\n2001:db8:0:fff::/64\n");
+}
+
+#[test]
+fn steps_along_at_the_same_size() {
+    let s = stdout(&["10.0.4.0/22", "^1", "^-1", "-q"]);
+    assert_eq!(s, "10.0.8.0/22\n10.0.0.0/22\n");
+}
+
+#[test]
+fn aggregates_two_prefixes() {
+    let s = stdout(&["10.0.0.0/24", "+10.0.1.0/24"]);
+    assert!(s.contains("Aggregate 10.0.0.0/24 with 10.0.1.0/24"));
+    assert!(s.contains("10.0.0.0/23"));
+    assert!(s.contains("siblings"));
+
+    let s = stdout(&["10.0.0.0/24", "+10.0.3.0/24"]);
+    assert!(s.contains("10.0.0.0/22"));
+    assert!(s.contains("10.0.1.0/24"));
+    assert!(s.contains("10.0.2.0/24"));
+}
+
+#[test]
+fn the_new_operators_reach_json() {
+    let s = stdout(&["10.0.0.0/16", "/24", "@1", "^1", "+10.1.0.0/16", "--json"]);
+    assert!(s.contains("\"subnet\": \"10.0.1.0/24\""));
+    assert!(s.contains("\"resolved_index\": 1"));
+    assert!(s.contains("\"step\": 1"));
+    assert!(s.contains("\"prefix\": \"10.1.0.0/16\""));
+    assert!(s.contains("\"exact\": true"));
+}
+
+#[test]
+fn a_pick_without_a_split_exits_one_with_a_hint() {
+    let out = run(&["2001:db8::/52", "@3"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("needs a split length"));
+}
+
+#[test]
+fn stepping_off_the_address_space_exits_one() {
+    let out = run(&["255.255.252.0/22", "^1"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("runs off"));
+}
+
+#[test]
 fn an_unsatisfiable_carve_exits_three() {
     let out = run(&["10.0.0.0/24", "-24", "-30"]);
     assert_eq!(out.status.code(), Some(3));

@@ -20,7 +20,10 @@ OPERATORS:
   -N*K, -NxK    carve K subnets of /N (use the x form to keep zsh happy)
   -<prefix>     reserve one specific subnet, wherever it sits
   +N            show the enclosing /N supernet
+  +<prefix>     the smallest prefix holding both this one and that
   =<addr|net>   ask whether an address or prefix falls inside
+  @N            the Nth subnet of a requested split; @-1 is the last
+  ^N            the prefix N blocks along at the same size; ^-1 is previous
 
   Carve operators are pooled into a single allocation: fixed subnets are placed
   first, then floating ones best-fit from the lowest free block. A /N split
@@ -41,6 +44,15 @@ EXAMPLES:
 
   prefixtool 2001:db8::/52 /64 =2001:db8:0:3::5
         which /64 does that address land in
+
+  prefixtool 2001:db8::/52 /64 @3
+        the other direction: which /64 is number 3
+
+  prefixtool 10.0.4.0/22 ^1
+        what comes straight after this block
+
+  prefixtool 10.0.0.0/24 +10.0.1.0/24
+        can these two be aggregated, and does it waste anything
 
 EXIT STATUS:
   0  success
