@@ -105,6 +105,19 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      # arm64 macOS refuses to execute a Mach-O whose signature does not match
+      # its contents, and the release profile strips symbols after the linker
+      # has ad-hoc signed. Re-sign, then assert the signature is intact rather
+      # than trusting that it is - a broken one surfaces as an unexplained
+      # "killed: 9" on the user's machine, not as a build failure here.
+      - name: Ad-hoc code signature
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/$BIN"
+          codesign --force --sign - --timestamp=none "$bin"
+          codesign --verify --strict --verbose=2 "$bin"
+
       - name: Smoke test
         # Only the natively-runnable targets; the cross-built ones are just
         # checked for existence in the packaging step.
@@ -189,6 +202,21 @@ jobs:
             echo
             echo '```'
             echo 'sha256sum -c prefixtool-${{ needs.verify.outputs.tag }}-<target>.tar.gz.sha256'
+            echo '```'
+            echo
+            echo "### macOS"
+            echo
+            echo "These binaries are ad-hoc signed but not notarized, so Gatekeeper will object to one that arrives with a quarantine flag. Unpacking from Terminal never sets that flag, so this just works:"
+            echo
+            echo '```'
+            echo 'tar xzf prefixtool-${{ needs.verify.outputs.tag }}-<target>.tar.gz'
+            echo './prefixtool --version'
+            echo '```'
+            echo
+            echo "If you downloaded through a browser and hit \"Apple could not verify...\", clear the flag it added:"
+            echo
+            echo '```'
+            echo 'xattr -d com.apple.quarantine prefixtool'
             echo '```'
             echo
             echo "Or build it yourself:"

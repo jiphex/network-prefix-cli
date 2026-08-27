@@ -19,6 +19,24 @@ it and put `prefixtool` on your `PATH`. Each archive ships with a `.sha256`
 next to it. Builds are published for Linux (x86-64 gnu and static musl,
 arm64), macOS (Intel and Apple silicon) and Windows.
 
+### macOS
+
+The macOS binaries are ad-hoc signed but not notarized, so Gatekeeper will
+object to one carrying a quarantine flag. Unpacking from Terminal never sets
+that flag:
+
+```
+tar xzf prefixtool-<tag>-aarch64-apple-darwin.tar.gz
+./prefixtool --version
+```
+
+If you downloaded through a browser and hit *"Apple could not verify..."*,
+clear the flag the browser added:
+
+```
+xattr -d com.apple.quarantine prefixtool
+```
+
 Or build it yourself:
 
 ```
