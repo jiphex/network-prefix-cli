@@ -6,12 +6,6 @@ A single-binary CLI for inspecting, splitting and carving up IPv4 and IPv6
 prefixes. Built for the moment you are staring at an allocation and need to
 know how it divides, what fits inside it, and what is left over afterwards.
 
-Three dependencies: [`ipnet`](https://crates.io/crates/ipnet) for prefix
-arithmetic, [`clap`](https://crates.io/crates/clap) for the command line, and
-[`nom`](https://crates.io/crates/nom) for the operator grammar. Everything else
-- the allocator, the big-number formatting, the JSON writer, the terminal
-colour - is in this repo.
-
 ## Install
 
 Grab a binary for your platform from the
