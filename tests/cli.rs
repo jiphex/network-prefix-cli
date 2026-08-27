@@ -41,7 +41,7 @@ fn reports_on_a_bare_prefix() {
     assert!(s.contains("2001::/64  -  IPv6"));
     assert!(s.contains("2^64 (~1.8e19)"));
     assert!(s.contains("Teredo"));
-    assert!(s.contains("0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2.ip6.arpa"));
+    assert!(s.contains("0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2.ip6.arpa."));
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn quiet_output_is_just_prefixes() {
 fn json_output_carries_the_exact_address_count() {
     let s = stdout(&["2001:db8::/52", "--json"]);
     assert!(s.contains("\"addresses\": 75557863725914323419136"));
-    assert!(s.contains("\"reverse_dns\": \"0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa\""));
+    assert!(s.contains("\"reverse_dns\": \"0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.\""));
 }
 
 #[test]
@@ -573,20 +573,37 @@ fn a_dot_lists_the_reverse_zones_a_prefix_needs() {
     assert!(s.contains("Reverse zones for 10.0.0.0/22"));
     assert!(s.contains("Boundary       /24"));
     for zone in [
-        "0.0.10.in-addr.arpa",
-        "1.0.10.in-addr.arpa",
-        "2.0.10.in-addr.arpa",
-        "3.0.10.in-addr.arpa",
+        "0.0.10.in-addr.arpa.",
+        "1.0.10.in-addr.arpa.",
+        "2.0.10.in-addr.arpa.",
+        "3.0.10.in-addr.arpa.",
     ] {
         assert!(s.contains(zone), "missing {zone}");
     }
 }
 
 #[test]
+fn zone_names_are_absolute() {
+    // A relative name is a different name once a zone file's origin is in
+    // scope, so every one of these carries the root's trailing dot - the
+    // Reverse DNS line and the JSON field included, not just the new list.
+    for line in stdout(&["10.0.0.0/22", "."]).lines() {
+        let line = line.trim();
+        if line.ends_with("arpa") {
+            panic!("relative zone name: {line}");
+        }
+    }
+    assert!(stdout(&["10.1.2.0/24"]).contains("Reverse DNS    2.1.10.in-addr.arpa."));
+    assert!(stdout(&["10.1.2.0/24", "--json"]).contains("\"2.1.10.in-addr.arpa.\""));
+    // The root zone is the trailing dot and nothing else in front of it.
+    assert!(stdout(&["0.0.0.0/0"]).contains("Reverse DNS    in-addr.arpa."));
+}
+
+#[test]
 fn a_dot_on_a_long_ipv4_prefix_explains_rfc_2317() {
     let s = stdout(&["10.0.0.64/26", "."]);
-    assert!(s.contains("Parent zone    0.0.10.in-addr.arpa"));
-    assert!(s.contains("64/26.0.0.10.in-addr.arpa"));
+    assert!(s.contains("Parent zone    0.0.10.in-addr.arpa."));
+    assert!(s.contains("64/26.0.0.10.in-addr.arpa."));
     assert!(s.contains("RFC 2317"));
 }
 
@@ -595,8 +612,8 @@ fn a_dot_takes_a_delegation_boundary() {
     let s = stdout(&["2001:db8::/48", ".56", "-q"]);
     let lines: Vec<&str> = s.lines().collect();
     assert_eq!(lines.len(), 8, "one per listed zone");
-    assert_eq!(lines[0], "0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa");
-    assert_eq!(lines[1], "1.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa");
+    assert_eq!(lines[0], "0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.");
+    assert_eq!(lines[1], "1.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.");
 
     // A boundary off a nibble is refused rather than rounded.
     let out = run(&["2001:db8::/48", ".50"]);
@@ -609,7 +626,7 @@ fn zone_listings_stay_lazy() {
     // 2^32 zones: the first must arrive without enumerating the rest.
     let s = stdout(&["2001:db8::/32", ".64", "-q", "-n", "3"]);
     assert_eq!(s.lines().count(), 3);
-    assert!(s.starts_with("0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"));
+    assert!(s.starts_with("0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa."));
 }
 
 #[test]

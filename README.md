@@ -167,7 +167,7 @@ $ prefixtool 2001::/64
   Prefix length  /64  (64 host bits)
   Addresses      2^64 (~1.8e19)
   Holds          65,536 x /80 or 4,294,967,296 x /96 or 2^48 x /112
-  Reverse DNS    0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2.ip6.arpa
+  Reverse DNS    0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2.ip6.arpa.
   Ranges         within 2001::/32 - Teredo (RFC 4380)
                  within 2000::/3 - Global unicast (RFC 4291)
   Caution        2001::/64 is Teredo - not for general assignment
@@ -459,10 +459,10 @@ Reverse zones for 10.0.0.0/22
   Boundary       /24
   Zones          4
 
-    0.0.10.in-addr.arpa
-    1.0.10.in-addr.arpa
-    2.0.10.in-addr.arpa
-    3.0.10.in-addr.arpa
+    0.0.10.in-addr.arpa.
+    1.0.10.in-addr.arpa.
+    2.0.10.in-addr.arpa.
+    3.0.10.in-addr.arpa.
 ```
 
 `in-addr.arpa` splits on octets and `ip6.arpa` on nibbles, so the boundary is
@@ -479,14 +479,16 @@ pointing CNAMEs in the enclosing `/24` at a made-up sub-zone:
 $ prefixtool 10.0.0.64/26 .
 ...
 Reverse zones for 10.0.0.64/26
-  Parent zone    0.0.10.in-addr.arpa
-  Delegation     64/26.0.0.10.in-addr.arpa
+  Parent zone    0.0.10.in-addr.arpa.
+  Delegation     64/26.0.0.10.in-addr.arpa.
   Note           longer than a /24, so it has no zone of its own: RFC 2317 has
-                 0.0.10.in-addr.arpa CNAME 64-127 into the delegated zone
+                 0.0.10.in-addr.arpa. CNAME 64-127 into the delegated zone
 ```
 
-Under `--quiet` the zone names come out bare, one per line, so they can be fed
-straight into whatever creates them.
+Zone names are absolute, with the trailing dot, because that is what a zone
+file or an `nsupdate` wants - a relative name is a different name once an
+origin is in scope. Under `--quiet` they come out bare, one per line, so they
+can be fed straight into whatever creates them.
 
 ### Locating an address
 

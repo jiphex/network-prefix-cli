@@ -184,10 +184,11 @@ mod tests {
 
     #[test]
     fn reverse_zones() {
-        assert_eq!(zone("10.1.2.0/24"), "2.1.10.in-addr.arpa");
-        assert_eq!(zone("10.0.0.0/8"), "10.in-addr.arpa");
-        assert_eq!(zone("0.0.0.0/0"), "in-addr.arpa");
-        assert_eq!(zone("2001:db8::/32"), "8.b.d.0.1.0.0.2.ip6.arpa");
+        assert_eq!(zone("10.1.2.0/24"), "2.1.10.in-addr.arpa.");
+        assert_eq!(zone("10.0.0.0/8"), "10.in-addr.arpa.");
+        // The root zone is just the trailing dot.
+        assert_eq!(zone("0.0.0.0/0"), "in-addr.arpa.");
+        assert_eq!(zone("2001:db8::/32"), "8.b.d.0.1.0.0.2.ip6.arpa.");
         assert!(matches!(info("10.0.0.0/26").reverse, Reverse::Unaligned(_)));
         assert!(matches!(
             info("2001:db8::/63").reverse,

@@ -123,6 +123,10 @@ pub fn names(net: IpNet, boundary: u8) -> impl Iterator<Item = String> {
 }
 
 /// The zone name for a prefix that sits on a label boundary.
+///
+/// Absolute, with the trailing dot: these names go into zone files, `dig` and
+/// `nsupdate`, where a relative one is a different name that picks up whatever
+/// origin is in scope.
 pub fn name(net: &IpNet) -> Option<String> {
     let mut labels: Vec<String> = match net.network() {
         IpAddr::V4(a) => {
@@ -149,6 +153,8 @@ pub fn name(net: &IpNet) -> Option<String> {
         }
         .into(),
     );
+    // The empty last label is the root, which is what the trailing dot is.
+    labels.push(String::new());
     Some(labels.join("."))
 }
 
@@ -185,11 +191,11 @@ mod tests {
     fn a_prefix_on_a_boundary_is_one_zone() {
         let (b, n, names) = aligned("10.1.2.0/24", None);
         assert_eq!((b, n), (24, 1));
-        assert_eq!(names, vec!["2.1.10.in-addr.arpa"]);
+        assert_eq!(names, vec!["2.1.10.in-addr.arpa."]);
 
         let (b, n, names) = aligned("2001:db8::/32", None);
         assert_eq!((b, n), (32, 1));
-        assert_eq!(names, vec!["8.b.d.0.1.0.0.2.ip6.arpa"]);
+        assert_eq!(names, vec!["8.b.d.0.1.0.0.2.ip6.arpa."]);
     }
 
     #[test]
@@ -199,10 +205,10 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "0.0.10.in-addr.arpa",
-                "1.0.10.in-addr.arpa",
-                "2.0.10.in-addr.arpa",
-                "3.0.10.in-addr.arpa",
+                "0.0.10.in-addr.arpa.",
+                "1.0.10.in-addr.arpa.",
+                "2.0.10.in-addr.arpa.",
+                "3.0.10.in-addr.arpa.",
             ]
         );
     }
@@ -213,8 +219,8 @@ mod tests {
         assert_eq!((b, n), (52, 4));
         // A /52 is thirteen nibbles deep, so the zone carries thirteen
         // labels before ip6.arpa.
-        assert_eq!(names[0], "0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa");
-        assert_eq!(names[3], "3.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa");
+        assert_eq!(names[0], "0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.");
+        assert_eq!(names[3], "3.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.");
     }
 
     #[test]
@@ -228,8 +234,8 @@ mod tests {
         else {
             panic!("expected a classless delegation");
         };
-        assert_eq!(parent, "0.0.10.in-addr.arpa");
-        assert_eq!(zone, "64/26.0.0.10.in-addr.arpa");
+        assert_eq!(parent, "0.0.10.in-addr.arpa.");
+        assert_eq!(zone, "64/26.0.0.10.in-addr.arpa.");
         assert_eq!((first, last), (64, 127));
     }
 
@@ -238,15 +244,15 @@ mod tests {
         // /32 and /128 are on a boundary, so they need no special case.
         let (b, n, names) = aligned("10.0.0.1/32", None);
         assert_eq!((b, n), (32, 1));
-        assert_eq!(names, vec!["1.0.0.10.in-addr.arpa"]);
+        assert_eq!(names, vec!["1.0.0.10.in-addr.arpa."]);
     }
 
     #[test]
     fn an_explicit_boundary_cuts_deeper() {
         let (b, n, names) = aligned("10.0.0.0/8", Some(16));
         assert_eq!((b, n), (16, 256));
-        assert_eq!(names[0], "0.10.in-addr.arpa");
-        assert_eq!(names[7], "7.10.in-addr.arpa");
+        assert_eq!(names[0], "0.10.in-addr.arpa.");
+        assert_eq!(names[7], "7.10.in-addr.arpa.");
     }
 
     #[test]
@@ -264,7 +270,7 @@ mod tests {
         let mut it = names(net("2001:db8::/32"), 64);
         assert_eq!(
             it.next().unwrap(),
-            "0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
+            "0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa."
         );
     }
 }
