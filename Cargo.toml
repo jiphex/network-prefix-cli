@@ -1,0 +1,16 @@
+[package]
+name = "prefixtool"
+version = "0.1.0"
+edition = "2024"
+description = "Inspect, split and carve up IPv4 and IPv6 prefixes"
+readme = "README.md"
+repository = "https://github.com/jiphex/network-prefix-cli"
+categories = ["command-line-utilities", "network-programming"]
+keywords = ["ipv6", "subnet", "prefix", "cidr", "network"]
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+ipnet = "2.12.1"
+
+[profile.release]
+strip = true
