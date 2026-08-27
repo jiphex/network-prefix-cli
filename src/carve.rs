@@ -7,6 +7,11 @@
 //!
 //! Fixed requests (carve out *this* subnet) are honoured before floating ones
 //! (carve out *a* /56), because a fixed request has nowhere else to go.
+//!
+//! Floating requests fill from the bottom of the parent by default. `Top`
+//! fills from the other end instead, which is how an infrastructure block is
+//! usually taken - down from the top, so that it grows towards the customer
+//! allocations coming up from the bottom rather than into them.
 
 use crate::num::Count;
 use ipnet::IpNet;
@@ -15,8 +20,45 @@ use ipnet::IpNet;
 /// bigger is a split, not a carve.
 pub const MAX_REQUEST_COUNT: u64 = 65_536;
 
+/// Which end of the parent floating requests are filled from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Direction {
+    /// Lowest free block first.
+    #[default]
+    Bottom,
+    /// Highest free block first.
+    Top,
+}
+
 #[derive(Debug, Clone)]
-pub enum Request {
+pub struct Request {
+    pub kind: Kind,
+    /// A name for this allocation, carried through to the table and the map.
+    pub label: Option<String>,
+}
+
+impl Request {
+    pub fn floating(len: u8) -> Request {
+        Request {
+            kind: Kind::Floating(len),
+            label: None,
+        }
+    }
+
+    pub fn fixed(net: IpNet) -> Request {
+        Request {
+            kind: Kind::Fixed(net),
+            label: None,
+        }
+    }
+
+    pub fn named(self, label: Option<String>) -> Request {
+        Request { label, ..self }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Kind {
     /// "give me a subnet of this length, anywhere it fits"
     ///
     /// One subnet per request. A request for several is expanded by the
@@ -43,23 +85,28 @@ pub enum Outcome {
 pub struct Grant {
     /// How the request was written, for echoing back to the user.
     pub label: String,
+    /// The name the request was given, if any.
+    pub name: Option<String>,
     pub outcome: Outcome,
 }
 
 #[derive(Debug)]
 pub struct Plan {
     pub parent: IpNet,
+    pub direction: Direction,
     pub grants: Vec<Grant>,
     /// Remaining space, aggregated into the fewest possible blocks.
     pub free: Vec<IpNet>,
 }
 
 /// One block of the parent, as it appears in the map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub net: IpNet,
     /// True when this block was handed out rather than left free.
     pub carved: bool,
+    /// The name of the allocation sitting here, for a carved row.
+    pub label: Option<String>,
 }
 
 impl Plan {
@@ -71,19 +118,31 @@ impl Plan {
     /// them, so no address is listed twice or missed.
     pub fn map(&self) -> Vec<Row> {
         let mut rows: Vec<Row> = self
-            .granted()
-            .map(|n| Row {
-                net: *n,
-                carved: true,
+            .grants
+            .iter()
+            .filter_map(|g| match &g.outcome {
+                Outcome::Granted(n) => Some(Row {
+                    net: *n,
+                    carved: true,
+                    label: g.name.clone(),
+                }),
+                _ => None,
             })
             .chain(self.free.iter().map(|n| Row {
                 net: *n,
                 carved: false,
+                label: None,
             }))
             .collect();
         // Disjoint blocks, so ordering by network address is a total order.
         rows.sort_by_key(|r| r.net);
         rows
+    }
+
+    /// True when any allocation was given a name, so the renderers know
+    /// whether a name column is worth its width.
+    pub fn any_named(&self) -> bool {
+        self.grants.iter().any(|g| g.name.is_some())
     }
 
     pub fn granted(&self) -> impl Iterator<Item = &IpNet> {
@@ -115,7 +174,7 @@ impl Plan {
 
 /// Run every request against `parent`, in the order given, and report both the
 /// allocations and what is left.
-pub fn plan(parent: IpNet, requests: &[Request]) -> Plan {
+pub fn plan(parent: IpNet, requests: &[Request], direction: Direction) -> Plan {
     let parent = parent.trunc();
     let mut free = vec![parent];
     // Slots keep command-line order for display, while we service fixed
@@ -124,27 +183,27 @@ pub fn plan(parent: IpNet, requests: &[Request]) -> Plan {
 
     for pass in [Pass::Fixed, Pass::Floating] {
         for (i, req) in requests.iter().enumerate() {
-            match (pass, req) {
-                (Pass::Fixed, Request::Fixed(net)) => {
-                    grants[i] = Some(Grant {
-                        label: net.to_string(),
-                        outcome: take_exact(&mut free, parent, *net),
-                    });
+            let (label, outcome) = match (pass, &req.kind) {
+                (Pass::Fixed, Kind::Fixed(net)) => {
+                    (net.to_string(), take_exact(&mut free, parent, *net))
                 }
-                (Pass::Floating, Request::Floating(len)) => {
-                    grants[i] = Some(Grant {
-                        label: format!("/{len}"),
-                        outcome: take(&mut free, parent, *len),
-                    });
+                (Pass::Floating, Kind::Floating(len)) => {
+                    (format!("/{len}"), take(&mut free, parent, *len, direction))
                 }
-                _ => {}
-            }
+                _ => continue,
+            };
+            grants[i] = Some(Grant {
+                label,
+                name: req.label.clone(),
+                outcome,
+            });
         }
     }
 
     free.sort();
     Plan {
         parent,
+        direction,
         grants: grants
             .into_iter()
             .map(|g| g.expect("every slot filled"))
@@ -160,7 +219,7 @@ enum Pass {
 }
 
 /// Best-fit allocation of a single subnet of length `len`.
-fn take(free: &mut Vec<IpNet>, parent: IpNet, len: u8) -> Outcome {
+fn take(free: &mut Vec<IpNet>, parent: IpNet, len: u8, direction: Direction) -> Outcome {
     if len > parent.max_prefix_len() {
         return Outcome::Impossible(format!(
             "/{len} is not a valid length for {}",
@@ -170,24 +229,39 @@ fn take(free: &mut Vec<IpNet>, parent: IpNet, len: u8) -> Outcome {
     if len < parent.prefix_len() {
         return Outcome::Impossible(format!("/{len} is larger than the parent {parent}"));
     }
-    // `free` is kept sorted, so the first block of the best size is also the
-    // lowest-addressed one: allocations march up from the bottom.
+    // `free` is kept sorted, so among equally good blocks the first is the
+    // lowest-addressed one and the last is the highest. Keeping the earlier
+    // one on a tie marches allocations up from the bottom; keeping the later
+    // one marches them down from the top.
     let mut best: Option<usize> = None;
     for (i, block) in free.iter().enumerate() {
-        if block.prefix_len() <= len
-            && best.is_none_or(|j| block.prefix_len() > free[j].prefix_len())
-        {
+        let better = |j: usize| match direction {
+            Direction::Bottom => block.prefix_len() > free[j].prefix_len(),
+            Direction::Top => block.prefix_len() >= free[j].prefix_len(),
+        };
+        if block.prefix_len() <= len && best.is_none_or(better) {
             best = Some(i);
         }
     }
     let Some(i) = best else {
         return Outcome::Exhausted;
     };
+    // Splitting down towards the request takes the half nearest the end being
+    // filled from, so the allocation lands at that end of the block rather
+    // than merely in the block nearest it.
     let mut cur = free.remove(i);
     while cur.prefix_len() < len {
         let (low, high) = halves(&cur);
-        free.push(high);
-        cur = low;
+        match direction {
+            Direction::Bottom => {
+                free.push(high);
+                cur = low;
+            }
+            Direction::Top => {
+                free.push(low);
+                cur = high;
+            }
+        }
     }
     free.sort();
     Outcome::Granted(cur)
@@ -265,10 +339,11 @@ mod tests {
         let p = plan(
             net("2001:db8::/52"),
             &[
-                Request::Floating(56),
-                Request::Floating(64),
-                Request::Floating(64),
+                Request::floating(56),
+                Request::floating(64),
+                Request::floating(64),
             ],
+            Direction::Bottom,
         );
         assert_eq!(
             granted(&p),
@@ -289,7 +364,8 @@ mod tests {
         // will need, because the /56 is serviced first by size.
         let p = plan(
             net("2001:db8::/52"),
-            &[Request::Floating(64), Request::Floating(56)],
+            &[Request::floating(64), Request::floating(56)],
+            Direction::Bottom,
         );
         let g = granted(&p);
         // Both fit, and the /56 is aligned on a /56 boundary.
@@ -303,7 +379,8 @@ mod tests {
         // The floating /64 would otherwise take 10.0.0.0/24's space first.
         let p = plan(
             net("10.0.0.0/22"),
-            &[Request::Floating(24), Request::Fixed(net("10.0.0.0/24"))],
+            &[Request::floating(24), Request::fixed(net("10.0.0.0/24"))],
+            Direction::Bottom,
         );
         assert!(p.all_granted());
         assert_eq!(granted(&p), vec!["10.0.1.0/24", "10.0.0.0/24"]);
@@ -313,7 +390,8 @@ mod tests {
     fn the_map_places_the_carve_among_the_blocks_around_it() {
         let p = plan(
             net("2001:db8::/56"),
-            &[Request::Fixed(net("2001:db8:0:cc::/64"))],
+            &[Request::fixed(net("2001:db8:0:cc::/64"))],
+            Direction::Bottom,
         );
         let rows: Vec<String> = p
             .map()
@@ -343,30 +421,38 @@ mod tests {
         for (parent, reqs) in [
             (
                 "2001:db8::/56",
-                vec![Request::Fixed(net("2001:db8:0:cc::/64"))],
+                vec![Request::fixed(net("2001:db8:0:cc::/64"))],
             ),
             (
                 "10.0.0.0/16",
                 vec![
-                    Request::Fixed(net("10.0.8.0/22")),
-                    Request::Floating(24),
-                    Request::Floating(24),
-                    Request::Floating(24),
-                    Request::Floating(24),
+                    Request::fixed(net("10.0.8.0/22")),
+                    Request::floating(24),
+                    Request::floating(24),
+                    Request::floating(24),
+                    Request::floating(24),
                 ],
             ),
-            ("10.0.0.0/24", vec![Request::Floating(24)]),
+            ("10.0.0.0/24", vec![Request::floating(24)]),
             (
                 "10.0.0.0/22",
                 vec![
-                    Request::Floating(30),
-                    Request::Floating(30),
-                    Request::Floating(30),
+                    Request::floating(30),
+                    Request::floating(30),
+                    Request::floating(30),
                 ],
             ),
         ] {
             let parent: IpNet = parent.parse().unwrap();
-            let p = plan(parent, &reqs);
+            for direction in [Direction::Bottom, Direction::Top] {
+                check_tiling(parent, &reqs, direction);
+            }
+        }
+    }
+
+    fn check_tiling(parent: IpNet, reqs: &[Request], direction: Direction) {
+        {
+            let p = plan(parent, reqs, direction);
             let rows = p.map();
             assert!(!rows.is_empty(), "{parent} produced an empty map");
 
@@ -392,8 +478,106 @@ mod tests {
     }
 
     #[test]
+    fn filling_from_the_top_starts_at_the_top() {
+        let p = plan(
+            net("10.0.0.0/16"),
+            &[Request::floating(24), Request::floating(24)],
+            Direction::Top,
+        );
+        assert_eq!(granted(&p), vec!["10.0.255.0/24", "10.0.254.0/24"]);
+        // ... and leaves the bottom whole, which is the point of asking.
+        assert_eq!(p.largest_free().unwrap().to_string(), "10.0.0.0/17");
+    }
+
+    #[test]
+    fn the_two_directions_are_mirror_images() {
+        // The same requests filled from either end must produce allocations
+        // that are reflections of each other about the middle of the parent.
+        let parent = net("10.0.0.0/16");
+        let reqs = [
+            Request::floating(24),
+            Request::floating(22),
+            Request::floating(30),
+            Request::floating(24),
+        ];
+        let bottom = plan(parent, &reqs, Direction::Bottom);
+        let top = plan(parent, &reqs, Direction::Top);
+
+        let first = crate::report::to_u128(parent.network());
+        let last = crate::report::to_u128(parent.broadcast());
+        for (b, t) in bottom.granted().zip(top.granted()) {
+            assert_eq!(b.prefix_len(), t.prefix_len());
+            // Reflecting a block about the parent swaps its ends, so the
+            // mirror of its first address is its last.
+            assert_eq!(
+                first + last - crate::report::to_u128(b.network()),
+                crate::report::to_u128(t.broadcast()),
+                "{b} and {t} are not reflections"
+            );
+        }
+    }
+
+    #[test]
+    fn a_direction_does_not_move_a_fixed_request() {
+        // Fixed requests have nowhere else to go, whichever end is being
+        // filled from.
+        for direction in [Direction::Bottom, Direction::Top] {
+            let p = plan(
+                net("10.0.0.0/16"),
+                &[Request::fixed(net("10.0.8.0/22"))],
+                direction,
+            );
+            assert_eq!(granted(&p), vec!["10.0.8.0/22"]);
+        }
+    }
+
+    #[test]
+    fn a_name_rides_along_to_the_grant_and_the_map() {
+        let p = plan(
+            net("10.0.0.0/22"),
+            &[
+                Request::floating(24).named(Some("dmz".into())),
+                Request::fixed(net("10.0.3.0/24")).named(Some("legacy".into())),
+            ],
+            Direction::Bottom,
+        );
+        assert!(p.any_named());
+        assert_eq!(p.grants[0].name.as_deref(), Some("dmz"));
+        assert_eq!(p.grants[1].name.as_deref(), Some("legacy"));
+
+        let named: Vec<(String, Option<String>)> = p
+            .map()
+            .into_iter()
+            .filter(|r| r.carved)
+            .map(|r| (r.net.to_string(), r.label))
+            .collect();
+        // Best fit puts the floating /24 in the /24-sized hole the fixed
+        // request left behind, not at the bottom of the parent.
+        assert_eq!(
+            named,
+            vec![
+                ("10.0.2.0/24".to_string(), Some("dmz".to_string())),
+                ("10.0.3.0/24".to_string(), Some("legacy".to_string())),
+            ]
+        );
+        // Nothing named means no name column anywhere.
+        assert!(
+            !plan(
+                net("10.0.0.0/22"),
+                &[Request::floating(24)],
+                Direction::Bottom
+            )
+            .any_named()
+        );
+    }
+
+    #[test]
     fn remainder_is_aggregated() {
-        let p = plan(net("10.0.0.0/24"), &[Request::Floating(25)]);
+        let p = plan(
+            net("10.0.0.0/24"),
+            &[Request::floating(25)],
+            Direction::Bottom,
+        );
         assert_eq!(free(&p), vec!["10.0.0.128/25"]);
     }
 
@@ -401,7 +585,8 @@ mod tests {
     fn exhaustion_is_reported_not_panicked() {
         let p = plan(
             net("10.0.0.0/24"),
-            &[Request::Floating(24), Request::Floating(30)],
+            &[Request::floating(24), Request::floating(30)],
+            Direction::Bottom,
         );
         assert!(!p.all_granted());
         assert!(matches!(p.grants[1].outcome, Outcome::Exhausted));
@@ -410,19 +595,31 @@ mod tests {
 
     #[test]
     fn requests_bigger_than_the_parent_are_impossible() {
-        let p = plan(net("10.0.0.0/24"), &[Request::Floating(16)]);
+        let p = plan(
+            net("10.0.0.0/24"),
+            &[Request::floating(16)],
+            Direction::Bottom,
+        );
         assert!(matches!(p.grants[0].outcome, Outcome::Impossible(_)));
     }
 
     #[test]
     fn a_v6_length_against_a_v4_parent_is_impossible() {
-        let p = plan(net("10.0.0.0/8"), &[Request::Floating(64)]);
+        let p = plan(
+            net("10.0.0.0/8"),
+            &[Request::floating(64)],
+            Direction::Bottom,
+        );
         assert!(matches!(p.grants[0].outcome, Outcome::Impossible(_)));
     }
 
     #[test]
     fn excluding_something_outside_the_parent_is_impossible() {
-        let p = plan(net("10.0.0.0/24"), &[Request::Fixed(net("192.168.0.0/24"))]);
+        let p = plan(
+            net("10.0.0.0/24"),
+            &[Request::fixed(net("192.168.0.0/24"))],
+            Direction::Bottom,
+        );
         assert!(matches!(p.grants[0].outcome, Outcome::Impossible(_)));
     }
 
@@ -431,9 +628,10 @@ mod tests {
         let p = plan(
             net("10.0.0.0/22"),
             &[
-                Request::Fixed(net("10.0.1.0/24")),
-                Request::Fixed(net("10.0.1.0/24")),
+                Request::fixed(net("10.0.1.0/24")),
+                Request::fixed(net("10.0.1.0/24")),
             ],
+            Direction::Bottom,
         );
         assert!(matches!(p.grants[0].outcome, Outcome::Granted(_)));
         assert!(matches!(p.grants[1].outcome, Outcome::Exhausted));

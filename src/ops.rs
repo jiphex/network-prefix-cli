@@ -4,20 +4,22 @@
 //! ```text
 //!   /64        split the prefix into /64s
 //!   %5         split it into 5 subnets, whatever size that takes
+//!   %2:1:1     share it out in that ratio
 //!   -56        carve one /56 out of it
 //!   -64*2      carve two /64s  (-64x2 is the same thing, and survives zsh)
+//!   -56:core   the same, with a name to carry into the map
 //!   -10.0.1.0/24   carve out that exact subnet
 //!   +48        show the enclosing /48
 //!   +10.1.0.0/16   aggregate with that prefix
 //!   =10.0.1.5  ask whether an address or prefix falls inside
 //!   @3         the 3rd subnet of the requested split (@-1 is the last)
 //!   ^1         the next prefix of the same size (^-1 is the previous)
+//!   .          the reverse DNS zones covering it (.56 to pick the boundary)
 //! ```
 
 use ipnet::IpNet;
 use nom::branch::alt;
-use nom::bytes::complete::take_till;
-use nom::character::complete::{char, one_of};
+use nom::character::complete::char;
 use nom::combinator::{all_consuming, map, map_opt, map_res, opt, rest};
 use nom::error::{ErrorKind, FromExternalError, ParseError};
 use nom::sequence::preceded;
@@ -31,10 +33,16 @@ pub enum Op {
     Split(u8),
     /// `%M` - divide into exactly M subnets, whatever lengths that needs.
     Parts(u64),
+    /// `%a:b:c` - share the space out in the given ratio.
+    Shares(Vec<u64>),
     /// `-N` / `-N*K` - allocate `count` subnets of length `len`.
-    Carve { len: u8, count: u64 },
+    Carve {
+        len: u8,
+        count: u64,
+        label: Option<String>,
+    },
     /// `-<prefix>` - remove one specific subnet.
-    Exclude(IpNet),
+    Exclude { net: IpNet, label: Option<String> },
     /// `+N` - the enclosing prefix of length N.
     Supernet(u8),
     /// `+<prefix>` - the smallest prefix holding both.
@@ -47,6 +55,9 @@ pub enum Op {
     /// `^N` - the prefix N blocks along at the same length. Negative walks
     /// backwards, so `^-1` is the previous block.
     Step(i64),
+    /// `.` - the reverse DNS zones covering the prefix. The length, when
+    /// given, is the delegation boundary to cut them at.
+    Zones(Option<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +128,7 @@ pub fn parse(token: &str) -> Result<Op, String> {
         Err(nom::Err::Error(Reason(Some(why))) | nom::Err::Failure(Reason(Some(why)))) => Err(why),
         // Nothing matched the leading character, so the sigil itself is wrong.
         Err(_) => Err(format!(
-            "unknown operator '{token}': expected /N, %M, -N, -N*K, -<prefix>, +N or =<addr>"
+            "unknown operator '{token}': expected /N, %M, -N, -N*K, -<prefix>, +N, =<addr> or ."
         )),
     }
 }
@@ -131,8 +142,8 @@ pub fn parse(token: &str) -> Result<Op, String> {
 fn operator(input: &'_ str) -> R<'_, Op> {
     alt((
         preceded(char('/'), map(prefix_len, Op::Split)),
-        preceded(char('%'), map(parts, Op::Parts)),
-        preceded(char('-'), alt((map(network, Op::Exclude), carve))),
+        preceded(char('%'), parts_or_shares),
+        preceded(char('-'), alt((exclude, carve))),
         preceded(
             char('+'),
             alt((map(network, Op::Aggregate), map(prefix_len, Op::Supernet))),
@@ -140,6 +151,7 @@ fn operator(input: &'_ str) -> R<'_, Op> {
         preceded(char('='), map(target, Op::Contains)),
         preceded(char('@'), map(index("subnet index"), Op::Nth)),
         preceded(char('^'), map(index("step"), Op::Step)),
+        preceded(char('.'), map(boundary, Op::Zones)),
     ))
     .parse(input)
 }
@@ -150,31 +162,73 @@ fn prefix_len(input: &'_ str) -> R<'_, u8> {
     map_res(preceded(opt(char('/')), rest), to_prefix_len).parse(input)
 }
 
-/// `N`, `N*K` or `NxK`. The `x` form survives zsh, which globs the `*`.
+/// `N`, `N*K` or `NxK`, each optionally followed by `:name`. The `x` form
+/// survives zsh, which globs the `*`.
 fn carve(input: &'_ str) -> R<'_, Op> {
-    map_res(
-        preceded(
-            opt(char('/')),
-            (
-                take_till(|c| c == '*' || c == 'x' || c == 'X'),
-                opt(preceded(one_of("*xX"), rest)),
-            ),
-        ),
-        |(len, count): (&str, Option<&str>)| -> Result<Op, String> {
-            let len = to_prefix_len(len)?;
-            let count = match count {
-                None => 1,
-                Some(c) => c
+    map_res(rest, |payload: &str| -> Result<Op, String> {
+        // A prefix length never contains a colon, so the first one starts the
+        // name. (The `-<prefix>` arm, where colons are part of the address,
+        // has already had its turn.)
+        let (body, label) = match payload.split_once(':') {
+            Some((body, label)) => (body, Some(check_label(label)?)),
+            None => (payload, None),
+        };
+        let body = body.strip_prefix('/').unwrap_or(body);
+        let (len, count) = match body.split_once(['*', 'x', 'X']) {
+            Some((len, count)) => (
+                len,
+                count
                     .parse::<u64>()
-                    .map_err(|_| format!("'{c}' is not a subnet count"))?,
-            };
-            if count == 0 {
-                return Err("a subnet count of 0 does nothing".into());
-            }
-            Ok(Op::Carve { len, count })
-        },
-    )
+                    .map_err(|_| format!("'{count}' is not a subnet count"))?,
+            ),
+            None => (body, 1),
+        };
+        let len = to_prefix_len(len)?;
+        if count == 0 {
+            return Err("a subnet count of 0 does nothing".into());
+        }
+        Ok(Op::Carve { len, count, label })
+    })
     .parse(input)
+}
+
+/// `<prefix>` or `<prefix>:name`.
+///
+/// The whole payload is tried as a prefix first, because an IPv6 address is
+/// mostly colons: `2001:db8::1` is an address, not `2001:db8:` named `1`.
+/// Only when that fails is the last colon treated as the start of a name,
+/// which is what makes `2001:db8::/64:core` work.
+fn exclude(input: &'_ str) -> R<'_, Op> {
+    map_opt(rest, |payload: &str| {
+        if let Ok(net) = parse_net(payload) {
+            return Some(Op::Exclude { net, label: None });
+        }
+        let (body, label) = payload.rsplit_once(':')?;
+        let net = parse_net(body).ok()?;
+        let label = check_label(label).ok()?;
+        Some(Op::Exclude {
+            net,
+            label: Some(label),
+        })
+    })
+    .parse(input)
+}
+
+/// Names go in a report and in JSON, so they are kept to something that needs
+/// no quoting or escaping anywhere it lands.
+fn check_label(s: &str) -> Result<String, String> {
+    if s.is_empty() {
+        return Err("a name after ':' cannot be empty".into());
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(format!(
+            "'{s}' is not a usable name: letters, digits, '-', '_' and '.' only"
+        ));
+    }
+    Ok(s.to_string())
 }
 
 /// A prefix, or nothing. Deliberately silent on failure: this is one arm of an
@@ -197,15 +251,47 @@ fn target(input: &'_ str) -> R<'_, Target> {
 /// A signed index. `+3` reads naturally beside `-3` but i64 will not parse the
 /// plus, so it is stripped first.
 /// `M`, the number of subnets to end up with.
-fn parts(input: &'_ str) -> R<'_, u64> {
-    map_res(rest, |s: &str| -> Result<u64, String> {
-        let n: u64 = s
-            .parse()
-            .map_err(|_| format!("'{s}' is not a number of subnets"))?;
-        if n == 0 {
-            return Err("a split into 0 subnets does nothing".into());
+fn parts(s: &str) -> Result<u64, String> {
+    let n: u64 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a number of subnets"))?;
+    if n == 0 {
+        return Err("a split into 0 subnets does nothing".into());
+    }
+    Ok(n)
+}
+
+/// `M`, a number of subnets, or `a:b:c`, a ratio to share the space out in.
+///
+/// The colon decides, rather than an `alt`, so that each shape can complain
+/// in its own vocabulary: `%five` is not a count, `%2:five` is not a share.
+fn parts_or_shares(input: &'_ str) -> R<'_, Op> {
+    map_res(rest, |s: &str| -> Result<Op, String> {
+        if !s.contains(':') {
+            return parts(s).map(Op::Parts);
         }
-        Ok(n)
+        let mut shares = Vec::new();
+        for part in s.split(':') {
+            let n: u64 = part
+                .parse()
+                .map_err(|_| format!("'{part}' is not a share"))?;
+            if n == 0 {
+                return Err("a share of 0 asks for no space at all".into());
+            }
+            shares.push(n);
+        }
+        Ok(Op::Shares(shares))
+    })
+    .parse(input)
+}
+
+/// The delegation boundary for `.`: a length, or nothing for the natural one.
+fn boundary(input: &'_ str) -> R<'_, Option<u8>> {
+    map_res(rest, |s: &str| -> Result<Option<u8>, String> {
+        if s.is_empty() {
+            return Ok(None);
+        }
+        to_prefix_len(s).map(Some)
     })
     .parse(input)
 }
@@ -250,7 +336,7 @@ pub fn parse_net(s: &str) -> Result<IpNet, String> {
 /// still reach `parse` and get a useful error rather than "unexpected
 /// argument".
 pub fn looks_like_op(token: &str) -> bool {
-    let Some(rest) = token.strip_prefix(['/', '+', '=', '-', '@', '^', '%']) else {
+    let Some(rest) = token.strip_prefix(['/', '+', '=', '-', '@', '^', '%', '.']) else {
         return false;
     };
     if !token.starts_with('-') {
@@ -289,24 +375,101 @@ mod tests {
         assert!(parse("%-2").is_err());
     }
 
-    #[test]
-    fn carves_with_and_without_counts() {
-        assert_eq!(p("-56"), Op::Carve { len: 56, count: 1 });
-        assert_eq!(p("-64*2"), Op::Carve { len: 64, count: 2 });
-        assert_eq!(p("-64x2"), Op::Carve { len: 64, count: 2 });
-        assert_eq!(p("-/24"), Op::Carve { len: 24, count: 1 });
+    fn carve_op(len: u8, count: u64, label: Option<&str>) -> Op {
+        Op::Carve {
+            len,
+            count,
+            label: label.map(str::to_string),
+        }
+    }
+
+    fn exclude_op(net: &str, label: Option<&str>) -> Op {
+        Op::Exclude {
+            net: net.parse().unwrap(),
+            label: label.map(str::to_string),
+        }
     }
 
     #[test]
-    fn carves_a_named_subnet() {
+    fn carves_with_and_without_counts() {
+        assert_eq!(p("-56"), carve_op(56, 1, None));
+        assert_eq!(p("-64*2"), carve_op(64, 2, None));
+        assert_eq!(p("-64x2"), carve_op(64, 2, None));
+        assert_eq!(p("-/24"), carve_op(24, 1, None));
+    }
+
+    #[test]
+    fn carves_a_specific_subnet() {
+        assert_eq!(p("-10.0.1.0/24"), exclude_op("10.0.1.0/24", None));
+        assert_eq!(p("-2001:db8::/64"), exclude_op("2001:db8::/64", None));
+    }
+
+    #[test]
+    fn a_carve_may_be_given_a_name() {
+        assert_eq!(p("-56:core"), carve_op(56, 1, Some("core")));
+        assert_eq!(p("-64x2:wifi"), carve_op(64, 2, Some("wifi")));
+        assert_eq!(p("-/24:dmz-1"), carve_op(24, 1, Some("dmz-1")));
         assert_eq!(
-            p("-10.0.1.0/24"),
-            Op::Exclude("10.0.1.0/24".parse().unwrap())
+            p("-10.0.1.0/24:legacy"),
+            exclude_op("10.0.1.0/24", Some("legacy"))
         );
         assert_eq!(
-            p("-2001:db8::/64"),
-            Op::Exclude("2001:db8::/64".parse().unwrap())
+            p("-2001:db8::/64:core"),
+            exclude_op("2001:db8::/64", Some("core"))
         );
+        // A name that is itself a number is still a name.
+        assert_eq!(p("-24:7"), carve_op(24, 1, Some("7")));
+    }
+
+    #[test]
+    fn an_address_wins_over_reading_its_tail_as_a_name() {
+        // `2001:db8::1` is an address, not `2001:db8:` called `1`, because
+        // the whole payload is tried as a prefix before any name is split off.
+        assert_eq!(p("-2001:db8::1"), exclude_op("2001:db8::1/128", None));
+        assert_eq!(p("-2001:db8::1:2"), exclude_op("2001:db8::1:2/128", None));
+        // Spelling the length out is how you name one anyway.
+        assert_eq!(
+            p("-2001:db8::1/128:loopback"),
+            exclude_op("2001:db8::1/128", Some("loopback"))
+        );
+    }
+
+    #[test]
+    fn a_name_has_to_be_usable_unquoted() {
+        assert!(parse("-24:").is_err());
+        assert!(parse("-24:a b").is_err());
+        assert!(parse("-24:a/b").is_err());
+        assert!(parse("-10.0.0.0/24:").is_err());
+    }
+
+    #[test]
+    fn shares_are_a_ratio() {
+        assert_eq!(p("%2:1:1"), Op::Shares(vec![2, 1, 1]));
+        assert_eq!(p("%1:1"), Op::Shares(vec![1, 1]));
+        assert_eq!(p("%10:3:2:1"), Op::Shares(vec![10, 3, 2, 1]));
+        // A lone number is still a count, not a one-part ratio.
+        assert_eq!(p("%4"), Op::Parts(4));
+        assert!(parse("%2:0").is_err());
+        assert!(parse("%2:").is_err());
+        assert!(parse("%2:five").is_err());
+    }
+
+    #[test]
+    fn each_shape_of_percent_complains_in_its_own_words() {
+        assert_eq!(
+            parse("%five").unwrap_err(),
+            "'five' is not a number of subnets"
+        );
+        assert_eq!(parse("%2:five").unwrap_err(), "'five' is not a share");
+    }
+
+    #[test]
+    fn zones_take_an_optional_boundary() {
+        assert_eq!(p("."), Op::Zones(None));
+        assert_eq!(p(".56"), Op::Zones(Some(56)));
+        assert_eq!(p(".24"), Op::Zones(Some(24)));
+        assert!(parse(".129").is_err());
+        assert!(parse(".nibble").is_err());
     }
 
     #[test]
@@ -371,6 +534,10 @@ mod tests {
             "-2001:db8::/48",
             "+48",
             "=10.0.0.1",
+            ".",
+            ".56",
+            "-24:dmz",
+            "%2:1:1",
         ] {
             assert!(looks_like_op(op), "{op} should look like an operator");
         }
@@ -411,10 +578,7 @@ mod tests {
             "'banana' is not a prefix length"
         );
         // And when the prefix arm is the one that should win, it does.
-        assert_eq!(
-            parse("-10.0.0.0/24"),
-            Ok(Op::Exclude("10.0.0.0/24".parse().unwrap()))
-        );
+        assert_eq!(parse("-10.0.0.0/24"), Ok(exclude_op("10.0.0.0/24", None)));
     }
 
     #[test]

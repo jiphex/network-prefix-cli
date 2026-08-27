@@ -1,14 +1,15 @@
 //! Output formatting: a human-readable report, a machine-readable one, and a
 //! bare list of prefixes for piping into other tools.
 
-use crate::carve::{Outcome, Plan};
+use crate::carve::{Direction, Outcome, Plan};
 use crate::info::{Info, Reverse};
 use crate::json::{self, J};
 use crate::num::{self, Count};
 use crate::ops::Target;
-use crate::report::{Parts, Report, Source, Split};
+use crate::report::{Parts, Report, Shares, Source, Split};
 use crate::style::Style;
 use crate::wellknown::Relation;
+use crate::zones::{self, Zones};
 use ipnet::IpNet;
 use std::io::{self, Write};
 
@@ -115,6 +116,10 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         )?;
     }
 
+    for z in &r.zones {
+        zones_section(w, i, z, o)?;
+    }
+
     for s in &r.supernets {
         heading(w, o, &format!("Supernet /{}", s.net.prefix_len()))?;
         writeln!(
@@ -163,7 +168,7 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                     if a.spare.len() == 1 { "" } else { "s" }
                 ),
             )?;
-            let (shown, more) = list(w, a.spare.iter().copied(), o, "    ")?;
+            let (shown, more) = list(w, a.spare.iter().map(ToString::to_string), o, "    ")?;
             if more {
                 truncated(w, o, "    ", shown, &a.spare.len().to_string())?;
             }
@@ -224,8 +229,140 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         parts_section(w, &r.info, p, o)?;
     }
 
+    for sh in &r.shares {
+        shares_section(w, &r.info, sh, o)?;
+    }
+
     for s in &r.splits {
         split_section(w, &r.info, s, o)?;
+    }
+    Ok(())
+}
+
+/// `.` - the reverse DNS zones covering the prefix.
+fn zones_section(w: &mut impl Write, info: &Info, z: &Zones, o: &Opts) -> io::Result<()> {
+    heading(w, o, &format!("Reverse zones for {}", info.net))?;
+    match z {
+        Zones::Aligned {
+            boundary,
+            count,
+            whole,
+        } => {
+            field(w, o, "Boundary", &format!("/{boundary}"))?;
+            field(w, o, "Zones", &count.describe())?;
+            if *whole {
+                field(w, o, "Note", "the prefix is a zone in its own right")?;
+            }
+            writeln!(w)?;
+            let (shown, more) = list(w, zones::names(info.net, *boundary), o, "    ")?;
+            if more {
+                truncated(w, o, "    ", shown, &count.describe())?;
+            }
+        }
+        Zones::Classless {
+            parent,
+            zone,
+            first,
+            last,
+        } => {
+            field(w, o, "Parent zone", parent)?;
+            field(w, o, "Delegation", zone)?;
+            field(
+                w,
+                o,
+                "Note",
+                "longer than a /24, so it has no zone of its own: RFC 2317 has",
+            )?;
+            field(
+                w,
+                o,
+                "",
+                &format!("{parent} CNAME {first}-{last} into the delegated zone"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// `%a:b:c` - the space shared out in a ratio.
+fn shares_section(w: &mut impl Write, info: &Info, sh: &Shares, o: &Opts) -> io::Result<()> {
+    let ratio = |r: &[u128]| {
+        r.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(":")
+    };
+    let wanted = ratio(&sh.wanted.iter().map(|w| u128::from(*w)).collect::<Vec<_>>());
+    match sh.source {
+        Source::Whole => heading(w, o, &format!("Share {} in the ratio {wanted}", info.net))?,
+        Source::Remainder => heading(
+            w,
+            o,
+            &format!("Share the remaining space in the ratio {wanted}"),
+        )?,
+    }
+
+    // A ragged remainder can force a very fine unit, and the ratio that comes
+    // out of it has more digits than anyone reads. Percentages say the same
+    // thing in a width that fits.
+    let got = match sh.readable_ratio() {
+        Some(got) => ratio(&got),
+        None => sh
+            .percentages()
+            .iter()
+            .map(|p| format!("{p:.1}%"))
+            .collect::<Vec<_>>()
+            .join(" : "),
+    };
+    if sh.exact {
+        field(w, o, "Ratio", &format!("{got}  as asked"))?;
+    } else {
+        field(w, o, "Ratio", &format!("{got}  for a request of {wanted}"))?;
+        if sh.ratio_is_dyadic() {
+            // The ratio is fine; the space it is being cut from is not.
+            field(
+                w,
+                o,
+                "Note",
+                "the nearest the space allows - it is no longer one block, so",
+            )?;
+            field(w, o, "", "the shares land on the pieces it is already in")?;
+        } else {
+            field(
+                w,
+                o,
+                "Note",
+                "the nearest aligned split - an exact one needs shares that",
+            )?;
+            field(w, o, "", "add up to a power of two once reduced")?;
+        }
+    }
+    let total: u64 = sh.wanted.iter().sum();
+
+    for (n, blocks) in sh.granted.iter().enumerate() {
+        writeln!(w)?;
+        writeln!(
+            w,
+            "  {}  {}",
+            o.style.bold(&format!("Share {}", n + 1)),
+            o.style.dim(&format!(
+                "{} of {total} part{}, {} address{}, {} block{}",
+                sh.wanted[n],
+                if total == 1 { "" } else { "s" },
+                num::describe_sum(&sh.counts(n)),
+                if sh.counts(n).len() == 1 && sh.counts(n)[0].as_u128() == Some(1) {
+                    ""
+                } else {
+                    "es"
+                },
+                blocks.len(),
+                if blocks.len() == 1 { "" } else { "s" },
+            ))
+        )?;
+        let (shown, more) = list(w, blocks.iter().map(ToString::to_string), o, "    ")?;
+        if more {
+            truncated(w, o, "    ", shown, &blocks.len().to_string())?;
+        }
     }
     Ok(())
 }
@@ -261,7 +398,7 @@ fn parts_section(w: &mut impl Write, info: &Info, p: &Parts, o: &Opts) -> io::Re
         field(w, o, "Last", &last.to_string())?;
     }
     writeln!(w)?;
-    let (shown, more) = list(w, p.blocks.iter().copied(), o, "    ")?;
+    let (shown, more) = list(w, p.blocks.iter().map(ToString::to_string), o, "    ")?;
     if more {
         truncated(w, o, "    ", shown, &p.blocks.len().to_string())?;
     }
@@ -269,7 +406,14 @@ fn parts_section(w: &mut impl Write, info: &Info, p: &Parts, o: &Opts) -> io::Re
 }
 
 fn carve_section(w: &mut impl Write, plan: &Plan, o: &Opts) -> io::Result<()> {
-    heading(w, o, &format!("Carve from {}", plan.parent))?;
+    heading(
+        w,
+        o,
+        &match plan.direction {
+            Direction::Bottom => format!("Carve from {}", plan.parent),
+            Direction::Top => format!("Carve from {}, filling from the top", plan.parent),
+        },
+    )?;
     let req = plan
         .grants
         .iter()
@@ -287,35 +431,56 @@ fn carve_section(w: &mut impl Write, plan: &Plan, o: &Opts) -> io::Result<()> {
         .max()
         .unwrap_or(10)
         .max(8);
+    // The name column only exists when something was named, so an unnamed
+    // carve looks exactly as it did before.
+    let named = plan.any_named();
+    let name = plan
+        .grants
+        .iter()
+        .filter_map(|g| g.name.as_ref().map(|n| n.len()))
+        .max()
+        .unwrap_or(4)
+        .max(4);
     writeln!(
         w,
         "  {}",
         o.style.dim(&format!(
-            "{:<req$}  {:<width$}  Size",
-            "Request", "Assigned"
+            "{:<req$}  {:<width$}  {}Size",
+            "Request",
+            "Assigned",
+            if named {
+                format!("{:<name$}  ", "Name")
+            } else {
+                String::new()
+            }
         ))
     )?;
     for g in &plan.grants {
+        // Padded before styling: escape sequences have no width, but the
+        // formatter counts them anyway and would skew every column.
+        let name_cell = match (named, &g.name) {
+            (false, _) => String::new(),
+            (true, Some(n)) => format!("{n:<name$}  "),
+            (true, None) => format!("{:<name$}  ", ""),
+        };
         match &g.outcome {
-            // Padded before styling: escape sequences have no width, but the
-            // formatter counts them anyway and would skew every column.
             Outcome::Granted(n) => writeln!(
                 w,
-                "  {:<req$}  {}  {}",
+                "  {:<req$}  {}  {name_cell}{}",
                 g.label,
                 o.style.good(&format!("{:<width$}", n.to_string())),
                 size_hint(n)
             )?,
             Outcome::Exhausted => writeln!(
                 w,
-                "  {:<req$}  {}  {}",
+                "  {:<req$}  {}  {name_cell}{}",
                 g.label,
                 o.style.bad(&format!("{:<width$}", "-")),
                 o.style.bad(&format!("no space left in {}", plan.parent))
             )?,
             Outcome::Impossible(why) => writeln!(
                 w,
-                "  {:<req$}  {}  {}",
+                "  {:<req$}  {}  {name_cell}{}",
                 g.label,
                 o.style.bad(&format!("{:<width$}", "-")),
                 o.style.bad(why)
@@ -415,7 +580,7 @@ fn map_section(w: &mut impl Write, plan: &Plan, o: &Opts) -> io::Result<()> {
                 "  {} {}   {}",
                 o.style.good("->"),
                 o.style.good(&format!("{:<width$}", row.net.to_string())),
-                o.style.dim("carved")
+                o.style.dim(row.label.as_deref().unwrap_or("carved"))
             )?;
         } else {
             writeln!(w, "     {}", o.style.prefix(&row.net.to_string()))?;
@@ -485,7 +650,7 @@ fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Re
         )?;
     }
     writeln!(w)?;
-    let (shown, more) = list(w, s.subnets(), o, "    ")?;
+    let (shown, more) = list(w, s.subnets().map(|n| n.to_string()), o, "    ")?;
     if more {
         truncated(w, o, "    ", shown, &num::describe_sum(&counts))?;
     }
@@ -519,7 +684,7 @@ fn first_of(s: &Split) -> IpNet {
 /// reported as cut short.
 fn list(
     w: &mut impl Write,
-    items: impl Iterator<Item = IpNet>,
+    items: impl Iterator<Item = String>,
     o: &Opts,
     indent: &str,
 ) -> io::Result<(usize, bool)> {
@@ -531,7 +696,7 @@ fn list(
             more = true;
             break;
         }
-        writeln!(w, "{indent}{}", o.style.prefix(&item.to_string()))?;
+        writeln!(w, "{indent}{}", o.style.prefix(&item))?;
         n += 1;
     }
     Ok((n, more))
@@ -592,6 +757,16 @@ fn size_hint(net: &IpNet) -> String {
 
 /// Just the prefixes, one per line, for `| xargs` and friends.
 pub fn quiet(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
+    for z in &r.zones {
+        match z {
+            Zones::Aligned { boundary, .. } => {
+                list(w, zones::names(r.info.net, *boundary), o, "")?;
+            }
+            // The delegated zone is the name you go and create; the parent
+            // is already there.
+            Zones::Classless { zone, .. } => writeln!(w, "{zone}")?,
+        };
+    }
     for s in &r.supernets {
         writeln!(w, "{}", s.net)?;
     }
@@ -613,18 +788,39 @@ pub fn quiet(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         for n in plan.granted() {
             writeln!(w, "{n}")?;
         }
-        if r.splits.is_empty() {
-            list(w, plan.free.iter().copied(), o, "")?;
+        // Whatever divides the remaining space - `/N`, `%M` or `%a:b:c` -
+        // already describes it, and listing the free blocks as well prints
+        // the same addresses twice at two different granularities. Worse for
+        // a ratio, where the free blocks would arrive as bare lines among the
+        // one-line-per-share ones and read as single-block shares.
+        if r.splits.is_empty() && r.parts.is_empty() && r.shares.is_empty() {
+            list(w, plan.free.iter().map(ToString::to_string), o, "")?;
         }
     }
     for p in &r.parts {
-        list(w, p.blocks.iter().copied(), o, "")?;
+        list(w, p.blocks.iter().map(ToString::to_string), o, "")?;
+    }
+    for sh in &r.shares {
+        // One line per share, its blocks space-separated, because a share is
+        // the unit the reader asked for and a flat list loses where each one
+        // ends - a share can be several blocks, and how many is not something
+        // you can tell by looking at them.
+        //
+        // Never truncated, whatever -n says: half a share's blocks is a wrong
+        // answer rather than a short one, and the line count is the ratio the
+        // reader wrote, so there is nothing to protect them from.
+        for blocks in &sh.granted {
+            let line: Vec<String> = blocks.iter().map(ToString::to_string).collect();
+            writeln!(w, "{}", line.join(" "))?;
+        }
     }
     for s in &r.splits {
-        list(w, s.subnets(), o, "")?;
+        list(w, s.subnets().map(|n| n.to_string()), o, "")?;
     }
     // With no operators at all, the prefix itself is the useful output.
     if r.supernets.is_empty()
+        && r.zones.is_empty()
+        && r.shares.is_empty()
         && r.parts.is_empty()
         && r.aggregates.is_empty()
         && r.neighbours.is_empty()
@@ -700,6 +896,48 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                 .collect(),
         ),
     ));
+
+    if !r.zones.is_empty() {
+        fields.push((
+            "reverse_zones",
+            J::Arr(
+                r.zones
+                    .iter()
+                    .map(|z| match z {
+                        Zones::Aligned {
+                            boundary,
+                            count,
+                            whole,
+                        } => {
+                            let names: Vec<String> =
+                                zones::names(i.net, *boundary).take(o.take()).collect();
+                            J::Obj(vec![
+                                ("kind", json::s("aligned")),
+                                ("boundary", json::n(boundary)),
+                                ("count", J::Num(count.digits())),
+                                ("whole_prefix", J::Bool(*whole)),
+                                ("listed", json::n(names.len())),
+                                ("zones", J::Arr(names.into_iter().map(json::s).collect())),
+                            ])
+                        }
+                        Zones::Classless {
+                            parent,
+                            zone,
+                            first,
+                            last,
+                        } => J::Obj(vec![
+                            ("kind", json::s("classless")),
+                            ("rfc", json::s("RFC 2317")),
+                            ("parent_zone", json::s(parent.clone())),
+                            ("zone", json::s(zone.clone())),
+                            ("first", json::n(first)),
+                            ("last", json::n(last)),
+                        ]),
+                    })
+                    .collect(),
+            ),
+        ));
+    }
 
     if !r.supernets.is_empty() {
         fields.push((
@@ -826,6 +1064,13 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
             "carve",
             J::Obj(vec![
                 ("parent", json::s(plan.parent.to_string())),
+                (
+                    "direction",
+                    json::s(match plan.direction {
+                        Direction::Bottom => "bottom",
+                        Direction::Top => "top",
+                    }),
+                ),
                 ("satisfied", J::Bool(plan.all_granted())),
                 (
                     "requests",
@@ -846,6 +1091,7 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                                 };
                                 J::Obj(vec![
                                     ("request", json::s(g.label.clone())),
+                                    ("name", g.name.clone().map_or(J::Null, json::s)),
                                     ("status", json::s(status)),
                                     ("assigned", assigned),
                                     ("reason", reason),
@@ -876,6 +1122,7 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                                 J::Obj(vec![
                                     ("prefix", json::s(r.net.to_string())),
                                     ("carved", J::Bool(r.carved)),
+                                    ("name", r.label.clone().map_or(J::Null, json::s)),
                                 ])
                             })
                             .collect(),
@@ -918,6 +1165,64 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                             (
                                 "subnets",
                                 J::Arr(p.blocks.iter().map(|n| json::s(n.to_string())).collect()),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ));
+    }
+
+    if !r.shares.is_empty() {
+        fields.push((
+            "shares",
+            J::Arr(
+                r.shares
+                    .iter()
+                    .map(|sh| {
+                        J::Obj(vec![
+                            ("ratio", J::Arr(sh.wanted.iter().map(json::n).collect())),
+                            (
+                                "achieved",
+                                J::Arr(sh.achieved().iter().map(json::n).collect()),
+                            ),
+                            ("exact", J::Bool(sh.exact)),
+                            (
+                                "source",
+                                json::s(match sh.source {
+                                    Source::Whole => "prefix",
+                                    Source::Remainder => "remaining_space",
+                                }),
+                            ),
+                            (
+                                "shares",
+                                J::Arr(
+                                    sh.granted
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(n, blocks)| {
+                                            J::Obj(vec![
+                                                ("share", json::n(sh.wanted[n])),
+                                                (
+                                                    "addresses",
+                                                    J::Num(
+                                                        num::sum_grouped(&sh.counts(n))
+                                                            .replace(',', ""),
+                                                    ),
+                                                ),
+                                                (
+                                                    "blocks",
+                                                    J::Arr(
+                                                        blocks
+                                                            .iter()
+                                                            .map(|n| json::s(n.to_string()))
+                                                            .collect(),
+                                                    ),
+                                                ),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
                             ),
                         ])
                     })

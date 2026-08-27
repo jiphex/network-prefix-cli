@@ -9,6 +9,7 @@ mod render;
 mod report;
 mod style;
 mod wellknown;
+mod zones;
 
 use clap::Parser;
 use std::io::{self, BufWriter, Write};
@@ -18,18 +19,25 @@ const AFTER_HELP: &str = "\
 OPERATORS:
   /N            split the prefix into /N subnets
   %M            split it into M subnets, whatever lengths that needs
+  %a:b:c        share it out in that ratio
   -N            carve one /N out of the prefix
   -N*K, -NxK    carve K subnets of /N (use the x form to keep zsh happy)
   -<prefix>     reserve one specific subnet, wherever it sits
+  -N:name       any carve may be named; the name lands in the table and map
   +N            show the enclosing /N supernet
   +<prefix>     aggregate; several of these make one aggregate, not a pair each
   =<addr|net>   ask whether an address or prefix falls inside
   @N            the Nth subnet of a requested split; @-1 is the last
   ^N            the prefix N blocks along at the same size; ^-1 is previous
+  .             the reverse DNS zones covering it; .N to pick the boundary
 
   Carve operators are pooled into a single allocation: fixed subnets are placed
-  first, then floating ones best-fit from the lowest free block. A /N split
-  given alongside a carve describes what the carve left over.
+  first, then floating ones best-fit from the lowest free block, or the highest
+  with --from=top. A /N split or a %M given alongside a carve describes what
+  the carve left over.
+
+  A ratio is exact when its parts, reduced, add up to a power of two: 2:1:1 can
+  be cut from a prefix, 2:1 cannot, and the report says which one you got.
 
 EXAMPLES:
   prefixtool 2001:db8::/64
@@ -41,11 +49,20 @@ EXAMPLES:
   prefixtool 10.0.0.0/24 %5
         divide it between five teams, as evenly as the space allows
 
+  prefixtool 2001:db8::/48 %2:1:1
+        share it between three sites, the first getting twice the space
+
+  prefixtool 10.0.0.0/22 .
+        which reverse DNS zones do I have to go and create
+
   prefixtool 2001:db8::/52 -56 -64x2
         carve out a /56 and two /64s, and aggregate what remains
 
   prefixtool 10.0.0.0/16 -10.0.8.0/22 -24x4 /24
         reserve an existing subnet, take four more /24s, count what is left
+
+  prefixtool 10.0.0.0/16 -24:dmz -22:wifi --from=top
+        take infrastructure down from the top, named, so the map reads as a plan
 
   prefixtool 2001:db8::/52 /64 =2001:db8:0:3::5
         which /64 does that address land in
@@ -112,10 +129,43 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
+    /// Which end floating carves fill from: bottom or top
+    #[arg(long, value_name = "END", default_value_t = From::Bottom,
+          value_enum, hide_default_value = true)]
+    from: From,
+
     /// When to colour the report: auto, always or never
     #[arg(long, value_name = "WHEN", default_value_t = style::When::Auto,
           value_enum, hide_default_value = true)]
     color: style::When,
+}
+
+/// Which end of the prefix `-N` allocations are taken from.
+///
+/// A clap-facing mirror of `carve::Direction`, so that the allocator does not
+/// have to derive `ValueEnum` and pull the CLI's vocabulary into itself.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum From {
+    Bottom,
+    Top,
+}
+
+impl std::fmt::Display for From {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            From::Bottom => "bottom",
+            From::Top => "top",
+        })
+    }
+}
+
+impl std::convert::From<From> for carve::Direction {
+    fn from(v: From) -> carve::Direction {
+        match v {
+            From::Bottom => carve::Direction::Bottom,
+            From::Top => carve::Direction::Top,
+        }
+    }
 }
 
 /// Move operators behind a `--` so that flags and operators can be given in
@@ -165,7 +215,7 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
         .iter()
         .map(|o| ops::parse(o))
         .collect::<Result<Vec<_>, _>>()?;
-    let report = report::build(&cli.prefix, net, &parsed)?;
+    let report = report::build(&cli.prefix, net, &parsed, cli.from.into())?;
 
     let opts = render::Opts {
         limit: cli.limit,

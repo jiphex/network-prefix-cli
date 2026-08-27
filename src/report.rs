@@ -5,17 +5,20 @@
 //! that run left behind. Splitting the remainder is what a planner actually
 //! wants to know - "after those allocations, how many /64s have I still got?"
 
-use crate::carve::{self, Plan, Request};
+use crate::carve::{self, Direction, Plan, Request};
 use crate::info::Info;
 use crate::num::Count;
 use crate::ops::{Op, Target};
+use crate::zones;
 use ipnet::IpNet;
 use std::collections::BinaryHeap;
 use std::net::IpAddr;
 
 pub struct Report {
     pub info: Info,
+    pub zones: Vec<zones::Zones>,
     pub parts: Vec<Parts>,
+    pub shares: Vec<Shares>,
     pub supernets: Vec<Supernet>,
     pub aggregates: Vec<Aggregation>,
     pub neighbours: Vec<Neighbour>,
@@ -93,6 +96,81 @@ impl Parts {
     }
 }
 
+/// `%a:b:c` - the space shared out in the ratio asked for.
+pub struct Shares {
+    /// The ratio as it was written.
+    pub wanted: Vec<u64>,
+    pub source: Source,
+    /// The blocks each share was given, in the order the shares were written.
+    /// Together they tile the space exactly.
+    pub granted: Vec<Vec<IpNet>>,
+    /// What each share actually got, in units of the granularity used.
+    /// A ragged remainder can force a very fine unit, so these are not
+    /// small numbers in general.
+    pub units: Vec<u128>,
+    /// True when the ratio came out exactly as asked.
+    pub exact: bool,
+}
+
+/// Past this a ratio has stopped being something anyone reads, and the
+/// percentages say more.
+const READABLE_SHARE: u128 = 9_999;
+
+impl Shares {
+    /// The ratio actually achieved, in its lowest terms. Equal to `wanted`
+    /// reduced whenever the split was exact.
+    pub fn achieved(&self) -> Vec<u128> {
+        let g = self.units.iter().copied().fold(0, gcd).max(1);
+        self.units.iter().map(|u| u / g).collect()
+    }
+
+    /// The achieved ratio, or `None` when it has too many digits to be worth
+    /// reading. Sharing out a space that is already in ragged pieces can
+    /// force a very fine unit, and `1431655765:715827882:715827883` tells a
+    /// reader nothing that "roughly 2:1:1" did not.
+    pub fn readable_ratio(&self) -> Option<Vec<u128>> {
+        let got = self.achieved();
+        got.iter().all(|g| *g <= READABLE_SHARE).then_some(got)
+    }
+
+    /// True when the ratio could be cut exactly out of a single block - its
+    /// parts, reduced, add up to a power of two.
+    ///
+    /// This is what separates the two ways a share can come out inexact: a
+    /// ratio like 2:1 that no prefix can express, and a ratio like 2:1:1 that
+    /// any prefix can, applied to a remainder that is no longer one block.
+    pub fn ratio_is_dyadic(&self) -> bool {
+        let g = self
+            .wanted
+            .iter()
+            .copied()
+            .fold(0u64, |a, b| gcd(u128::from(a), u128::from(b)) as u64);
+        let total: u64 = self.wanted.iter().sum::<u64>() / g.max(1);
+        total.is_power_of_two()
+    }
+
+    /// Each share as a percentage of the space, for when the ratio is not.
+    pub fn percentages(&self) -> Vec<f64> {
+        let total: u128 = self.units.iter().sum();
+        self.units
+            .iter()
+            .map(|u| *u as f64 * 100.0 / total as f64)
+            .collect()
+    }
+
+    /// Addresses in one share, as a sum over the blocks it was given.
+    pub fn counts(&self, i: usize) -> Vec<Count> {
+        self.granted[i]
+            .iter()
+            .map(|n| Count::pow2(u32::from(n.max_prefix_len() - n.prefix_len())))
+            .collect()
+    }
+}
+
+fn gcd(a: u128, b: u128) -> u128 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Source {
     /// Splitting the prefix itself.
@@ -135,7 +213,7 @@ impl Split {
     }
 }
 
-pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
+pub fn build(input: &str, net: IpNet, ops: &[Op], direction: Direction) -> Result<Report, String> {
     let info = Info::new(input, net);
     let net = info.net;
     let max = net.max_prefix_len();
@@ -143,6 +221,8 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
     let mut requests = Vec::new();
     let mut split_lens = Vec::new();
     let mut part_counts: Vec<u64> = Vec::new();
+    let mut share_ratios: Vec<Vec<u64>> = Vec::new();
+    let mut zone_sets = Vec::new();
     let mut supernets = Vec::new();
     let mut aggregate_with: Vec<IpNet> = Vec::new();
     let mut neighbours = Vec::new();
@@ -175,6 +255,24 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
                     part_counts.push(*m);
                 }
             }
+            Op::Shares(ratio) => {
+                let total: u64 = ratio
+                    .iter()
+                    .try_fold(0u64, |a, b| a.checked_add(*b))
+                    .ok_or("those shares add up to more than this can count, let alone divide")?;
+                if total > carve::MAX_REQUEST_COUNT {
+                    return Err(format!(
+                        "those shares add up to {}, which is more than this divides in one go \
+                         (limit {})",
+                        crate::num::group(&total.to_string()),
+                        crate::num::group(&carve::MAX_REQUEST_COUNT.to_string())
+                    ));
+                }
+                if !share_ratios.contains(ratio) {
+                    share_ratios.push(ratio.clone());
+                }
+            }
+            Op::Zones(boundary) => zone_sets.push(zones::zones(&net, *boundary)?),
             Op::Supernet(len) => {
                 check_len(*len, max, net)?;
                 if *len >= net.prefix_len() {
@@ -213,7 +311,7 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
                 net: step(net, *n)?,
             }),
             Op::Nth(n) => pick_indexes.push(*n),
-            Op::Carve { len, count } => {
+            Op::Carve { len, count, label } => {
                 if *count > carve::MAX_REQUEST_COUNT {
                     return Err(format!(
                         "{count} subnets is more than this carves in one go \
@@ -224,10 +322,12 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
                 // Expanded so each subnet gets its own outcome, and its own
                 // line in the output.
                 for _ in 0..*count {
-                    requests.push(Request::Floating(*len));
+                    requests.push(Request::floating(*len).named(label.clone()));
                 }
             }
-            Op::Exclude(target) => requests.push(Request::Fixed(*target)),
+            Op::Exclude { net: target, label } => {
+                requests.push(Request::fixed(*target).named(label.clone()))
+            }
             Op::Contains(target) => {
                 if target.is_ipv4() != net.addr().is_ipv4() {
                     return Err(format!(
@@ -254,7 +354,7 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
         vec![aggregate(net, &aggregate_with)]
     };
 
-    let plan = (!requests.is_empty()).then(|| carve::plan(net, &requests));
+    let plan = (!requests.is_empty()).then(|| carve::plan(net, &requests, direction));
 
     let parts = part_counts
         .iter()
@@ -267,6 +367,23 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
                 wanted: *m,
                 source,
                 blocks,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let shares = share_ratios
+        .iter()
+        .map(|ratio| {
+            let (source, blocks) = match &plan {
+                Some(plan) => (Source::Remainder, plan.free.clone()),
+                None => (Source::Whole, vec![net]),
+            };
+            share(&blocks, ratio).map(|(granted, units, exact)| Shares {
+                wanted: ratio.clone(),
+                source,
+                granted,
+                units,
+                exact,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -333,7 +450,9 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
 
     Ok(Report {
         info,
+        zones: zone_sets,
         parts,
+        shares,
         supernets,
         aggregates,
         neighbours,
@@ -386,6 +505,154 @@ fn divide(blocks: &[IpNet], m: u64) -> Result<Vec<IpNet>, String> {
     let mut out: Vec<IpNet> = heap.into_iter().map(|BySize(n)| n).collect();
     out.sort();
     Ok(out)
+}
+
+/// Share `blocks` out in the ratio `wanted`.
+///
+/// The space is cut into equal units small enough that every block is a whole
+/// number of them and there are at least as many units as there are shares.
+/// The units are then apportioned by largest remainder and each share's run
+/// is glued back into the fewest aligned blocks that cover it.
+///
+/// Working in units rather than in addresses is what keeps the result exact:
+/// every unit goes to exactly one share, so the shares tile the space however
+/// ragged it started out, and a share whose run does not fit one aligned block
+/// gets several rather than being rounded.
+///
+/// A ratio is only exactly representable when its parts, reduced, sum to a
+/// power of two - `2:1:1` can be cut from a prefix but `2:1` cannot, because
+/// two thirds of a prefix is not a prefix. Anything else lands on the nearest
+/// the units allow, which is the same bargain `%M` already makes.
+type Shared = (Vec<Vec<IpNet>>, Vec<u128>, bool);
+
+fn share(blocks: &[IpNet], wanted: &[u64]) -> Result<Shared, String> {
+    let total: u128 = wanted.iter().map(|w| u128::from(*w)).sum();
+    let ratio = || {
+        wanted
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(":")
+    };
+    let space = || {
+        blocks
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    // Units start at the size of the smallest block, which is the coarsest
+    // granularity that still divides every block evenly.
+    let host = |n: &IpNet| u32::from(n.max_prefix_len() - n.prefix_len());
+    let mut unit_bits = blocks.iter().map(host).min().unwrap_or(0);
+    let mut units: u128 = blocks
+        .iter()
+        .map(|b| 1u128 << (host(b) - unit_bits))
+        .sum::<u128>();
+
+    // Halving the unit until there are enough to go round. Only the whole-
+    // prefix case ever gets here - it starts at a single unit - and it stops
+    // the moment it has enough, so `units` stays under the ratio's own limit
+    // and cannot overflow on the way.
+    while units < total {
+        if unit_bits == 0 {
+            return Err(format!(
+                "{} cannot be shared {}; it holds {} address{} and the ratio needs {}",
+                space(),
+                ratio(),
+                crate::num::describe_sum(
+                    &blocks
+                        .iter()
+                        .map(|b| Count::pow2(host(b)))
+                        .collect::<Vec<_>>()
+                ),
+                if units == 1 { "" } else { "es" },
+                crate::num::group(&total.to_string()),
+            ));
+        }
+        unit_bits -= 1;
+        units *= 2;
+    }
+
+    // Largest remainder: floor everyone first, then hand the leftover units
+    // to whoever was rounded down hardest. Ties go to the earlier share, so
+    // the result depends only on the ratio and not on the sort.
+    let mut got: Vec<u128> = wanted
+        .iter()
+        .map(|w| u128::from(*w) * units / total)
+        .collect();
+    let mut spare = units - got.iter().sum::<u128>();
+    let mut order: Vec<usize> = (0..wanted.len()).collect();
+    order.sort_by_key(|&i| {
+        let remainder = u128::from(wanted[i]) * units % total;
+        (std::cmp::Reverse(remainder), i)
+    });
+    for &i in &order {
+        if spare == 0 {
+            break;
+        }
+        got[i] += 1;
+        spare -= 1;
+    }
+
+    let exact = wanted
+        .iter()
+        .all(|w| (u128::from(*w) * units).is_multiple_of(total));
+
+    // Walk the blocks in address order, cutting each share's run off the
+    // front. A run that spans a block boundary simply continues into the
+    // next block, which is what lets a ragged remainder be shared at all.
+    let mut granted: Vec<Vec<IpNet>> = vec![Vec::new(); wanted.len()];
+    let mut blocks = blocks.iter();
+    let mut current = blocks.next().copied();
+    let mut left_in_block: u128 = current.map_or(0, |b| 1u128 << (host(&b) - unit_bits));
+    let mut offset: u128 = 0;
+    for (i, mut owed) in got.iter().copied().enumerate() {
+        while owed > 0 {
+            let block = current.expect("the units were counted from these blocks");
+            let take = owed.min(left_in_block);
+            cut(block, unit_bits, offset, take, &mut granted[i]);
+            owed -= take;
+            offset += take;
+            left_in_block -= take;
+            if left_in_block == 0 {
+                current = blocks.next().copied();
+                left_in_block = current.map_or(0, |b| 1u128 << (host(&b) - unit_bits));
+                offset = 0;
+            }
+        }
+    }
+
+    Ok((granted, got, exact))
+}
+
+/// The fewest aligned blocks covering `len` units starting `start` units into
+/// `container`. Each step takes the largest block the offset's alignment and
+/// the units remaining will both allow, which is the minimal cover.
+fn cut(container: IpNet, unit_bits: u32, mut start: u128, mut len: u128, out: &mut Vec<IpNet>) {
+    let base = to_u128(container.network());
+    let ipv4 = container.addr().is_ipv4();
+    while len > 0 {
+        let by_align = if start == 0 {
+            u128::MAX
+        } else {
+            1u128 << start.trailing_zeros()
+        };
+        let by_len = 1u128 << (127 - len.leading_zeros());
+        let size = by_align.min(by_len);
+        let host = unit_bits + size.trailing_zeros();
+        out.push(
+            IpNet::new(
+                from_u128(base + (start << unit_bits), ipv4),
+                container.max_prefix_len() - host as u8,
+            )
+            .expect("a length between the container's and a host route")
+            .trunc(),
+        );
+        start += size;
+        len -= size;
+    }
 }
 
 /// Orders blocks largest first, and among equals by lowest address, so the
@@ -449,8 +716,9 @@ fn aggregate(base: IpNet, with: &[IpNet]) -> Aggregation {
 
     // Reserve the union inside the aggregate; whatever stays free is the space
     // no input covers.
-    let requests: Vec<carve::Request> = maximal.into_iter().map(carve::Request::Fixed).collect();
-    let spare = carve::plan(net, &requests).free;
+    let requests: Vec<carve::Request> = maximal.into_iter().map(carve::Request::fixed).collect();
+    // Direction only steers floating requests, and these are all fixed.
+    let spare = carve::plan(net, &requests, Direction::default()).free;
 
     Aggregation {
         with: with.to_vec(),
@@ -598,7 +866,7 @@ mod tests {
 
     fn report(prefix: &str, ops_str: &[&str]) -> Report {
         let parsed: Vec<Op> = ops_str.iter().map(|o| ops::parse(o).unwrap()).collect();
-        build(prefix, prefix.parse().unwrap(), &parsed).unwrap()
+        build(prefix, prefix.parse().unwrap(), &parsed, Direction::Bottom).unwrap()
     }
 
     fn err(prefix: &str, op: &str) -> String {
@@ -607,7 +875,7 @@ mod tests {
 
     fn errs(prefix: &str, ops_str: &[&str]) -> String {
         let parsed: Vec<Op> = ops_str.iter().map(|o| ops::parse(o).unwrap()).collect();
-        match build(prefix, prefix.parse().unwrap(), &parsed) {
+        match build(prefix, prefix.parse().unwrap(), &parsed, Direction::Bottom) {
             Err(e) => e,
             Ok(_) => panic!("expected {ops_str:?} to be rejected"),
         }
@@ -968,5 +1236,206 @@ mod tests {
         let r = report("10.0.0.0/24", &["-25", "/24"]);
         assert_eq!(r.splits[0].blocks.len(), 0);
         assert_eq!(r.splits[0].too_small, 1);
+    }
+
+    #[test]
+    fn shares_tile_the_space_exactly() {
+        // The same property the carve map has to hold: every address of the
+        // space goes to exactly one share, so the blocks abut with no gap and
+        // no overlap. This is what makes a ratio an answer rather than a
+        // suggestion.
+        for (prefix, ops) in [
+            ("10.0.0.0/24", vec!["%2:1:1"]),
+            ("10.0.0.0/24", vec!["%3:1"]),
+            ("10.0.0.0/24", vec!["%2:1"]),
+            ("10.0.0.0/16", vec!["%7:1:1:1"]),
+            ("10.0.0.0/16", vec!["%1:2:4:8"]),
+            ("10.0.0.0/16", vec!["%5:3"]),
+            ("2001:db8::/48", vec!["%2:1:1"]),
+            ("2001:db8::/48", vec!["%9:5:3:1"]),
+            // ... and over a ragged remainder, not just a whole prefix.
+            ("10.0.0.0/16", vec!["-10.0.8.0/22", "%2:1:1"]),
+            ("10.0.0.0/16", vec!["-24x3", "%3:1"]),
+        ] {
+            let r = report(prefix, &ops);
+            let sh = &r.shares[0];
+            let space: Vec<IpNet> = match &r.carve {
+                Some(plan) => plan.free.clone(),
+                None => vec![r.info.net],
+            };
+
+            let mut blocks: Vec<IpNet> = sh.granted.iter().flatten().copied().collect();
+            blocks.sort();
+            let addr = |n: &IpNet| to_u128(n.network());
+            let end = |n: &IpNet| to_u128(n.broadcast());
+
+            // Every share got something, and the blocks cover the space.
+            assert!(
+                sh.granted.iter().all(|g| !g.is_empty()),
+                "{prefix} {ops:?} left a share with nothing"
+            );
+            let mut want: Vec<IpNet> = space.clone();
+            want.sort();
+            let mut cursor = 0;
+            for block in &blocks {
+                if cursor < want.len() && addr(block) > end(&want[cursor]) {
+                    cursor += 1;
+                }
+                assert!(
+                    cursor < want.len() && want[cursor].contains(block),
+                    "{block} is outside the space being shared in {prefix} {ops:?}"
+                );
+            }
+            for pair in blocks.windows(2) {
+                let abuts = end(&pair[0]) + 1 == addr(&pair[1]);
+                // A jump is only allowed where the free space itself jumped.
+                let across_a_gap = want.iter().any(|b| end(b) == end(&pair[0]));
+                assert!(
+                    abuts || across_a_gap,
+                    "{} and {} neither abut nor sit either side of a gap",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            // The totals add up to the space exactly.
+            let got: u128 = blocks
+                .iter()
+                .map(|b| 1u128 << (b.max_prefix_len() - b.prefix_len()))
+                .sum();
+            let total: u128 = want
+                .iter()
+                .map(|b| 1u128 << (b.max_prefix_len() - b.prefix_len()))
+                .sum();
+            assert_eq!(got, total, "{prefix} {ops:?} does not add up");
+        }
+    }
+
+    #[test]
+    fn equal_shares_come_out_the_same_sizes_as_a_plain_count() {
+        // `%1:1:1` is the ratio spelling of `%3`, so the two must divide the
+        // space into the same blocks - which is also what pins the rounding
+        // rule to the one `%M` already uses.
+        // From two: a lone `%1` has no colon, so it is a count and not a
+        // ratio at all.
+        for m in 2..=12usize {
+            let ratio = format!("%{}", vec!["1"; m].join(":"));
+            let shares = report("10.0.0.0/20", &[&ratio]);
+            let parts = report("10.0.0.0/20", &[&format!("%{m}")]);
+
+            let mut a: Vec<u8> = shares.shares[0]
+                .granted
+                .iter()
+                .flatten()
+                .map(|n| n.prefix_len())
+                .collect();
+            let mut b: Vec<u8> = parts.parts[0]
+                .blocks
+                .iter()
+                .map(|n| n.prefix_len())
+                .collect();
+            a.sort();
+            b.sort();
+            assert_eq!(a, b, "{ratio} and %{m} disagree");
+        }
+    }
+
+    #[test]
+    fn a_ratio_that_reduces_to_a_power_of_two_is_exact() {
+        for (ratio, exact) in [
+            ("%1:1", true),
+            ("%2:1:1", true),
+            ("%3:1", true),
+            ("%1:2:4:8", false), // sums to 15
+            ("%2:2:2:2", true),  // reduces to 1:1:1:1
+            ("%6:2", true),      // reduces to 3:1
+            ("%2:1", false),
+            ("%1:1:1", false),
+        ] {
+            let r = report("10.0.0.0/16", &[ratio]);
+            assert_eq!(r.shares[0].exact, exact, "{ratio}");
+        }
+    }
+
+    #[test]
+    fn an_inexact_ratio_reports_the_one_it_actually_got() {
+        let r = report("10.0.0.0/24", &["%2:1"]);
+        assert!(!r.shares[0].exact);
+        assert_eq!(r.shares[0].achieved(), vec![3, 1]);
+        // Reduced, so an exact split reports the ratio as asked for.
+        let r = report("10.0.0.0/24", &["%4:2:2"]);
+        assert!(r.shares[0].exact);
+        assert_eq!(r.shares[0].achieved(), vec![2, 1, 1]);
+    }
+
+    #[test]
+    fn shares_bigger_than_the_space_are_refused() {
+        // A /30 is four addresses and the ratio wants five parts.
+        assert!(errs("10.0.0.0/30", &["%2:1:1:1"]).contains("cannot be shared"));
+        assert!(errs("10.0.0.0/32", &["%1:1"]).contains("cannot be shared"));
+        // ... but exactly enough is fine.
+        assert_eq!(
+            report("10.0.0.0/30", &["%2:1:1"]).shares[0].granted.len(),
+            3
+        );
+    }
+
+    #[test]
+    fn a_ragged_remainder_is_shared_rather_than_refused() {
+        // Carving anything out of a large prefix leaves blocks of every size
+        // down to the carve's own, and the granularity that divides them all
+        // is fine. That is a normal thing to ask for, so it has to work.
+        let r = report("10.0.0.0/8", &["-30", "%2:1:1"]);
+        let sh = &r.shares[0];
+        assert_eq!(sh.granted.len(), 3);
+        // Not exact - the space is in pieces - but the ratio itself is fine,
+        // and the note has to say which of the two it was.
+        assert!(!sh.exact);
+        assert!(sh.ratio_is_dyadic());
+        // Too fine a unit to state as a ratio, so it falls back to percentages.
+        assert!(sh.readable_ratio().is_none());
+        let pct = sh.percentages();
+        assert!((pct[0] - 50.0).abs() < 0.01, "{pct:?}");
+        assert!((pct[1] - 25.0).abs() < 0.01, "{pct:?}");
+    }
+
+    #[test]
+    fn the_two_kinds_of_inexact_are_told_apart() {
+        // A ratio no prefix can express ...
+        assert!(!report("10.0.0.0/24", &["%2:1"]).shares[0].ratio_is_dyadic());
+        // ... versus one any prefix can, over a space that is not one.
+        assert!(report("10.0.0.0/8", &["-30", "%2:1:1"]).shares[0].ratio_is_dyadic());
+        assert!(report("10.0.0.0/24", &["%6:2"]).shares[0].ratio_is_dyadic());
+    }
+
+    #[test]
+    fn shares_of_the_remainder_follow_the_carve() {
+        let r = report("10.0.0.0/16", &["-10.0.8.0/22", "%1:1"]);
+        assert_eq!(r.shares[0].source, Source::Remainder);
+        // None of the shared blocks may overlap the carved one.
+        let carved: IpNet = "10.0.8.0/22".parse().unwrap();
+        for block in r.shares[0].granted.iter().flatten() {
+            assert!(
+                !carved.contains(block) && !block.contains(&carved),
+                "{block} overlaps the carve"
+            );
+        }
+    }
+
+    #[test]
+    fn zones_come_out_of_a_dot() {
+        use crate::zones::Zones;
+        let r = report("10.0.0.0/22", &["."]);
+        let Zones::Aligned {
+            boundary, count, ..
+        } = r.zones[0]
+        else {
+            panic!("expected aligned zones");
+        };
+        assert_eq!((boundary, count.as_u128()), (24, Some(4)));
+
+        // An explicit boundary that is not a label is a usage error, not a
+        // silently rounded one.
+        assert!(errs("10.0.0.0/22", &[".26"]).contains("delegation boundary"));
+        assert!(errs("10.0.0.0/22", &[".8"]).contains("shorter than"));
     }
 }
