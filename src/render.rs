@@ -127,30 +127,38 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
     }
 
     for a in &r.aggregates {
-        heading(w, o, &format!("Aggregate {} with {}", i.net, a.with))?;
+        heading(
+            w,
+            o,
+            &format!("Aggregate {} with {}", i.net, english_list(&a.with)),
+        )?;
         field(
             w,
             o,
             "Smallest",
             &format!("{}  ({})", a.net, size_hint(&a.net)),
         )?;
-        if a.nested {
-            let inner = if a.net == a.with { i.net } else { a.with };
-            field(w, o, "Note", &format!("{} already contains {inner}", a.net))?;
-        } else if a.exact {
-            field(
-                w,
-                o,
-                "Note",
-                "exact - the two are siblings, nothing else is covered",
-            )?;
+        if a.exact {
+            // The aggregate being one of the inputs is a different story from
+            // the inputs merely overlapping each other.
+            let note = if i.net == a.net || a.with.contains(&a.net) {
+                format!("exact - {} already covers the rest", a.net)
+            } else if a.nested {
+                "exact - the inputs fill it between them, though some overlap".to_string()
+            } else {
+                "exact - the inputs fill it between them, nothing else is covered".to_string()
+            };
+            field(w, o, "Note", &note)?;
         } else {
+            if a.nested {
+                field(w, o, "Note", "some inputs are already inside others")?;
+            }
             field(
                 w,
                 o,
                 "Also covers",
                 &format!(
-                    "{} block{} neither prefix uses",
+                    "{} block{} no input uses",
                     a.spare.len(),
                     if a.spare.len() == 1 { "" } else { "s" }
                 ),
@@ -446,6 +454,22 @@ fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Re
     Ok(())
 }
 
+/// `a`, `a and b`, `a, b and c` - so a heading listing several prefixes reads
+/// as a sentence rather than as a delimited field.
+fn english_list(nets: &[IpNet]) -> String {
+    match nets {
+        [] => String::new(),
+        [only] => only.to_string(),
+        [rest @ .., last] => format!(
+            "{} and {last}",
+            rest.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn first_of(s: &Split) -> IpNet {
     s.first().expect("blocks is non-empty")
 }
@@ -672,7 +696,10 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                     .iter()
                     .map(|a| {
                         J::Obj(vec![
-                            ("with", json::s(a.with.to_string())),
+                            (
+                                "with",
+                                J::Arr(a.with.iter().map(|n| json::s(n.to_string())).collect()),
+                            ),
                             ("prefix", json::s(a.net.to_string())),
                             ("prefix_length", json::n(a.net.prefix_len())),
                             ("exact", J::Bool(a.exact)),

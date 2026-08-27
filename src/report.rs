@@ -23,15 +23,17 @@ pub struct Report {
     pub splits: Vec<Split>,
 }
 
-/// `+<prefix>` - the smallest prefix holding both.
+/// `+<prefix>` - the smallest prefix holding the prefix under inspection and
+/// every prefix named alongside it.
 pub struct Aggregation {
-    pub with: IpNet,
+    /// The prefixes named with `+`, in the order they were given.
+    pub with: Vec<IpNet>,
     pub net: IpNet,
-    /// The aggregate is exactly the two inputs and nothing else.
+    /// The inputs fill the aggregate between them, with nothing left over.
     pub exact: bool,
-    /// One of the two already contains the other.
+    /// One input already contains another.
     pub nested: bool,
-    /// Space inside the aggregate that neither input covers.
+    /// Space inside the aggregate that no input covers.
     pub spare: Vec<IpNet>,
 }
 
@@ -115,7 +117,7 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
     let mut requests = Vec::new();
     let mut split_lens = Vec::new();
     let mut supernets = Vec::new();
-    let mut aggregates = Vec::new();
+    let mut aggregate_with: Vec<IpNet> = Vec::new();
     let mut neighbours = Vec::new();
     let mut lookups = Vec::new();
     let mut pick_indexes = Vec::new();
@@ -162,7 +164,10 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
                         carve::family(&net)
                     ));
                 }
-                aggregates.push(aggregate(net, other.trunc()));
+                // Collected rather than aggregated one at a time: several
+                // `+` operators describe one aggregate covering all of them,
+                // not a series of pairings with the prefix under inspection.
+                aggregate_with.push(other.trunc());
             }
             Op::Step(n) => neighbours.push(Neighbour {
                 step: *n,
@@ -203,6 +208,12 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
             }
         }
     }
+
+    let aggregates = if aggregate_with.is_empty() {
+        Vec::new()
+    } else {
+        vec![aggregate(net, &aggregate_with)]
+    };
 
     let plan = (!requests.is_empty()).then(|| carve::plan(net, &requests));
 
@@ -278,38 +289,54 @@ pub fn build(input: &str, net: IpNet, ops: &[Op]) -> Result<Report, String> {
     })
 }
 
-/// The smallest prefix holding both, plus whatever space that leaves over.
-fn aggregate(a: IpNet, b: IpNet) -> Aggregation {
-    let bits = a.max_prefix_len();
-    let diff = to_u128(a.network()) ^ to_u128(b.network());
-    let common = if diff == 0 {
-        bits
-    } else {
-        // leading_zeros counts across the full u128, so drop the padding an
-        // IPv4 address sits behind.
-        (diff.leading_zeros() as u8).saturating_sub(128 - bits)
-    };
-    let len = common.min(a.prefix_len()).min(b.prefix_len());
-    let net = IpNet::new(a.addr(), len)
-        .expect("a length no longer than either input")
+/// The smallest prefix holding every input, plus whatever space that leaves
+/// over.
+fn aggregate(base: IpNet, with: &[IpNet]) -> Aggregation {
+    let inputs: Vec<IpNet> = std::iter::once(base).chain(with.iter().copied()).collect();
+    let bits = base.max_prefix_len();
+
+    // The aggregate reaches back to the longest run of leading bits that every
+    // input shares, and can be no longer than the shortest input.
+    let mut len = inputs.iter().map(IpNet::prefix_len).min().unwrap_or(bits);
+    for other in &inputs {
+        let diff = to_u128(base.network()) ^ to_u128(other.network());
+        let common = if diff == 0 {
+            bits
+        } else {
+            // leading_zeros counts across the full u128, so drop the padding
+            // an IPv4 address sits behind.
+            (diff.leading_zeros() as u8).saturating_sub(128 - bits)
+        };
+        len = len.min(common);
+    }
+    let net = IpNet::new(base.addr(), len)
+        .expect("a length no longer than any input")
         .trunc();
 
-    let nested = a.contains(&b) || b.contains(&a);
-    // Two disjoint prefixes fill their aggregate exactly only when they are
-    // siblings; anything else leaves a gap.
-    let exact = !nested && a.prefix_len() == b.prefix_len() && a.is_sibling(&b);
-    let spare = if nested || exact {
-        Vec::new()
-    } else {
-        // Reuse the allocator: reserve both inputs inside the aggregate and
-        // whatever stays free is the space neither of them covers.
-        carve::plan(net, &[carve::Request::Fixed(a), carve::Request::Fixed(b)]).free
-    };
+    // Aligned prefixes either nest or are disjoint, so dropping every input
+    // that another one already contains leaves a disjoint set - which is what
+    // the allocator needs, and what the union of the inputs actually is.
+    let mut maximal: Vec<IpNet> = Vec::new();
+    for (i, candidate) in inputs.iter().enumerate() {
+        let covered = inputs
+            .iter()
+            .enumerate()
+            .any(|(j, other)| other.contains(candidate) && (other != candidate || j < i));
+        if !covered {
+            maximal.push(*candidate);
+        }
+    }
+    let nested = maximal.len() < inputs.len();
+
+    // Reserve the union inside the aggregate; whatever stays free is the space
+    // no input covers.
+    let requests: Vec<carve::Request> = maximal.into_iter().map(carve::Request::Fixed).collect();
+    let spare = carve::plan(net, &requests).free;
 
     Aggregation {
-        with: b,
+        with: with.to_vec(),
         net,
-        exact,
+        exact: spare.is_empty(),
         nested,
         spare,
     }
@@ -551,13 +578,92 @@ mod tests {
         let a = &r.aggregates[0];
         assert_eq!(a.net.to_string(), "10.0.0.0/16");
         assert!(a.nested);
-        assert!(!a.exact);
+        // The outer prefix is the aggregate, so the inputs do fill it.
+        assert!(a.exact);
         assert!(a.spare.is_empty());
 
         // The same holds when the smaller prefix is the one on the left.
         let r = report("10.0.5.0/24", &["+10.0.0.0/16"]);
         assert_eq!(r.aggregates[0].net.to_string(), "10.0.0.0/16");
         assert!(r.aggregates[0].nested);
+    }
+
+    #[test]
+    fn several_pluses_make_one_aggregate_not_several_pairs() {
+        let r = report("10.0.0.0/24", &["+10.0.1.0/24", "+10.1.0.0/16"]);
+        assert_eq!(r.aggregates.len(), 1, "one aggregate, not a pairing each");
+
+        let a = &r.aggregates[0];
+        assert_eq!(
+            a.with.iter().map(|n| n.to_string()).collect::<Vec<_>>(),
+            vec!["10.0.1.0/24", "10.1.0.0/16"]
+        );
+        assert_eq!(a.net.to_string(), "10.0.0.0/15");
+
+        // 10.0.1.0/24 was named by the user, so it is not spare space.
+        let spare: Vec<String> = a.spare.iter().map(|n| n.to_string()).collect();
+        assert!(
+            !spare.contains(&"10.0.1.0/24".to_string()),
+            "a named prefix was counted as unused: {spare:?}"
+        );
+        assert_eq!(
+            spare,
+            vec![
+                "10.0.2.0/23",
+                "10.0.4.0/22",
+                "10.0.8.0/21",
+                "10.0.16.0/20",
+                "10.0.32.0/19",
+                "10.0.64.0/18",
+                "10.0.128.0/17",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_aggregate_and_its_spare_account_for_every_input() {
+        // Whatever the inputs, the aggregate contains all of them and the
+        // spare blocks never overlap any of them.
+        for (base, ops) in [
+            ("10.0.0.0/24", vec!["+10.0.1.0/24", "+10.1.0.0/16"]),
+            ("10.0.0.0/24", vec!["+10.0.1.0/24", "+10.0.2.0/23"]),
+            ("10.0.0.0/24", vec!["+10.0.0.128/25", "+10.0.1.0/24"]),
+            ("10.0.0.0/16", vec!["+10.0.5.0/24"]),
+            (
+                "192.168.4.0/24",
+                vec!["+192.168.9.0/24", "+192.168.200.0/22"],
+            ),
+            (
+                "2001:db8::/48",
+                vec!["+2001:db8:1::/48", "+2001:db8:9::/44"],
+            ),
+        ] {
+            let r = report(base, &ops);
+            let a = &r.aggregates[0];
+            let inputs: Vec<IpNet> = std::iter::once(base.parse().unwrap())
+                .chain(a.with.iter().copied())
+                .collect();
+
+            for input in &inputs {
+                assert!(a.net.contains(input), "{} missing {input}", a.net);
+                for spare in &a.spare {
+                    assert!(
+                        !spare.contains(input) && !input.contains(spare),
+                        "spare {spare} overlaps input {input}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_single_plus_is_unchanged() {
+        let r = report("10.0.0.0/24", &["+10.0.1.0/24"]);
+        assert_eq!(r.aggregates.len(), 1);
+        assert_eq!(r.aggregates[0].with.len(), 1);
+        assert_eq!(r.aggregates[0].net.to_string(), "10.0.0.0/23");
+        assert!(r.aggregates[0].exact);
+        assert!(!r.aggregates[0].nested);
     }
 
     #[test]

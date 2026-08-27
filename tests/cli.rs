@@ -141,12 +141,48 @@ fn aggregates_two_prefixes() {
     let s = stdout(&["10.0.0.0/24", "+10.0.1.0/24"]);
     assert!(s.contains("Aggregate 10.0.0.0/24 with 10.0.1.0/24"));
     assert!(s.contains("10.0.0.0/23"));
-    assert!(s.contains("siblings"));
+    assert!(s.contains("exact"));
 
     let s = stdout(&["10.0.0.0/24", "+10.0.3.0/24"]);
     assert!(s.contains("10.0.0.0/22"));
     assert!(s.contains("10.0.1.0/24"));
     assert!(s.contains("10.0.2.0/24"));
+}
+
+#[test]
+fn several_pluses_aggregate_together_not_pairwise() {
+    let s = stdout(&["10.0.0.0/24", "+10.0.1.0/24", "+10.1.0.0/16"]);
+
+    // One aggregate covering everything, not one pairing per operator.
+    assert_eq!(s.matches("Aggregate ").count(), 1, "{s}");
+    assert!(s.contains("Aggregate 10.0.0.0/24 with 10.0.1.0/24 and 10.1.0.0/16"));
+    assert!(s.contains("10.0.0.0/15"));
+
+    // A prefix the user named is not spare space.
+    let spare: Vec<&str> = s
+        .lines()
+        .skip_while(|l| !l.contains("Also covers"))
+        .skip(1)
+        .take_while(|l| l.starts_with("    "))
+        .collect();
+    assert!(
+        !spare.iter().any(|l| l.contains("10.0.1.0/24")),
+        "a named prefix was listed as unused: {spare:?}"
+    );
+    assert_eq!(spare.len(), 7);
+}
+
+#[test]
+fn aggregate_inputs_reach_json_as_a_list() {
+    let s = stdout(&["10.0.0.0/24", "+10.0.1.0/24", "+10.1.0.0/16", "--json"]);
+    let with = s
+        .lines()
+        .skip_while(|l| !l.contains("\"with\""))
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(with.contains("10.0.1.0/24"), "{with}");
+    assert!(with.contains("10.1.0.0/16"), "{with}");
 }
 
 #[test]
