@@ -108,6 +108,22 @@ the `*`. Flags and operators can be given in any order.
 | 0 | Success |
 | 1 | Bad prefix or operator |
 | 3 | A carve request could not be satisfied |
+| 4 | `--quiet`, and an `=<addr>` asked about is outside the prefix |
+
+Under `--quiet` an `=<addr>` is a question, so its answer becomes the exit
+status and the tool can stand in for a test:
+
+```
+if prefixtool 10.0.0.0/8 =$addr -q > /dev/null; then
+    echo "$addr is ours"
+fi
+```
+
+Outside is **4** rather than 1 so that it stays distinct from bad input: a
+mistyped address is a different thing from a confident no, and a script
+checking for one should never be handed the other. With several `=` operators,
+any one outside is a fail. The other output modes print the answer for you to
+read, so they stay at 0.
 
 ## What it tells you
 

@@ -292,14 +292,14 @@ fn the_new_operators_reach_json() {
 }
 
 #[test]
-fn a_pick_without_a_split_exits_one_with_a_hint() {
+fn a_pick_without_a_split_is_a_usage_error() {
     let out = run(&["2001:db8::/52", "@3"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("needs a split length"));
 }
 
 #[test]
-fn stepping_off_the_address_space_exits_one() {
+fn stepping_off_the_address_space_is_a_usage_error() {
     let out = run(&["255.255.252.0/22", "^1"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("runs off"));
@@ -453,6 +453,72 @@ fn no_color_env_var_is_respected() {
 }
 
 #[test]
+fn quiet_makes_a_lookup_a_predicate() {
+    // Inside is a pass, outside is a fail, the way test(1) and grep behave.
+    assert_eq!(
+        run(&["10.0.0.0/8", "=10.1.2.3", "-q"]).status.code(),
+        Some(0)
+    );
+    assert_eq!(
+        run(&["10.0.0.0/8", "=192.0.2.1", "-q"]).status.code(),
+        Some(4)
+    );
+
+    // A prefix argument works the same as a bare address.
+    assert_eq!(
+        run(&["10.0.0.0/8", "=10.1.0.0/16", "-q"]).status.code(),
+        Some(0)
+    );
+    assert_eq!(
+        run(&["10.0.0.0/8", "=192.0.2.0/24", "-q"]).status.code(),
+        Some(4)
+    );
+
+    // Several lookups: any one outside is a fail.
+    assert_eq!(
+        run(&["10.0.0.0/8", "=10.0.0.1", "=10.9.9.9", "-q"])
+            .status
+            .code(),
+        Some(0)
+    );
+    assert_eq!(
+        run(&["10.0.0.0/8", "=10.0.0.1", "=192.0.2.1", "-q"])
+            .status
+            .code(),
+        Some(4)
+    );
+}
+
+#[test]
+fn a_mistyped_address_is_not_mistaken_for_a_no() {
+    // This is why "outside" got a code of its own: a script asking whether an
+    // address is inside must not read a typo as a confident answer. Bad input
+    // stays at 1, outside is 4, and the two never collide.
+    let out = run(&["10.0.0.0/8", "=10.1.2.999", "-q"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_ne!(out.status.code(), Some(4), "a typo looked like a no");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not an IP prefix"));
+}
+
+#[test]
+fn only_quiet_turns_a_lookup_into_an_exit_status() {
+    // The report and the JSON both say so on screen, so they stay at 0.
+    assert_eq!(run(&["10.0.0.0/8", "=192.0.2.1"]).status.code(), Some(0));
+    assert_eq!(
+        run(&["10.0.0.0/8", "=192.0.2.1", "--json"]).status.code(),
+        Some(0)
+    );
+}
+
+#[test]
+fn an_unsatisfied_carve_outranks_a_failed_lookup() {
+    // Both are wrong; the plan that could not be carried out is the bigger
+    // news, so 3 wins over 4.
+    let out = run(&["10.0.0.0/24", "-24", "-30", "=192.0.2.1", "-q"]);
+    assert_eq!(out.status.code(), Some(3));
+}
+
+#[test]
 fn an_unsatisfiable_carve_exits_three() {
     let out = run(&["10.0.0.0/24", "-24", "-30"]);
     assert_eq!(out.status.code(), Some(3));
@@ -460,14 +526,14 @@ fn an_unsatisfiable_carve_exits_three() {
 }
 
 #[test]
-fn a_bad_operator_exits_one_with_a_hint() {
+fn a_bad_operator_is_a_usage_error() {
     let out = run(&["10.0.0.0/24", "/16"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("did you mean +16?"));
 }
 
 #[test]
-fn a_bad_prefix_exits_one() {
+fn a_bad_prefix_is_a_usage_error() {
     let out = run(&["not-a-prefix"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("not an IP prefix"));
