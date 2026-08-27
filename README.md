@@ -29,6 +29,30 @@ platform, so there is no Rust toolchain and no compile.
 Homebrew clears the quarantine flag itself, so the macOS note below does not
 apply to a `brew install`.
 
+### Nix
+
+The repository is a flake, so it can be run without installing anything:
+
+```
+nix run github:jiphex/network-prefix-cli -- 2001:db8::/52 -56 -64x2
+```
+
+Or built, or brought into a profile or a NixOS configuration:
+
+```
+nix build github:jiphex/network-prefix-cli
+nix profile install github:jiphex/network-prefix-cli
+```
+
+`nix develop` gives a shell with cargo, rustc, clippy, rustfmt and
+rust-analyzer, and `nix flake check` builds the package - which runs the test
+suite, since that is part of `buildRustPackage`.
+
+The flake takes its name, version, description and homepage straight from
+`Cargo.toml`, so there is no second copy of the version to keep in step. Its
+only input is nixpkgs, tracking `nixos-unstable` because the crate is on the
+2024 edition.
+
 ### macOS
 
 The macOS binaries are ad-hoc signed but not notarized, so Gatekeeper will
