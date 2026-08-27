@@ -163,7 +163,10 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                     if a.spare.len() == 1 { "" } else { "s" }
                 ),
             )?;
-            list(w, a.spare.iter().copied(), o, "    ")?;
+            let (shown, more) = list(w, a.spare.iter().copied(), o, "    ")?;
+            if more {
+                truncated(w, o, "    ", shown, &a.spare.len().to_string())?;
+            }
         }
     }
 
@@ -440,16 +443,9 @@ fn split_section(w: &mut impl Write, info: &Info, s: &Split, o: &Opts) -> io::Re
         )?;
     }
     writeln!(w)?;
-    let shown = list(w, s.subnets(), o, "    ")?;
-    let total = num::describe_sum(&counts);
-    if !o.all && shown == o.take() {
-        writeln!(
-            w,
-            "{}",
-            o.style.dim(&format!(
-                "    ... (showing {shown} of {total}; use --all or -n N)"
-            ))
-        )?;
+    let (shown, more) = list(w, s.subnets(), o, "    ")?;
+    if more {
+        truncated(w, o, "    ", shown, &num::describe_sum(&counts))?;
     }
     Ok(())
 }
@@ -474,19 +470,48 @@ fn first_of(s: &Split) -> IpNet {
     s.first().expect("blocks is non-empty")
 }
 
-/// Write up to the configured number of prefixes, returning how many went out.
+/// Write up to the configured number of prefixes.
+///
+/// Returns how many went out and whether there were more to come. Truncation
+/// is decided by looking one past the limit rather than by comparing the count
+/// against it, so a list that happens to be exactly the limit long is not
+/// reported as cut short.
 fn list(
     w: &mut impl Write,
     items: impl Iterator<Item = IpNet>,
     o: &Opts,
     indent: &str,
-) -> io::Result<usize> {
+) -> io::Result<(usize, bool)> {
+    let limit = o.take();
     let mut n = 0;
-    for item in items.take(o.take()) {
+    let mut more = false;
+    for item in items {
+        if n == limit {
+            more = true;
+            break;
+        }
         writeln!(w, "{indent}{}", o.style.prefix(&item.to_string()))?;
         n += 1;
     }
-    Ok(n)
+    Ok((n, more))
+}
+
+/// The line that says a list was cut short. Every truncated list in the
+/// report needs one; leaving it off silently loses information.
+fn truncated(
+    w: &mut impl Write,
+    o: &Opts,
+    indent: &str,
+    shown: usize,
+    total: &str,
+) -> io::Result<()> {
+    writeln!(
+        w,
+        "{}",
+        o.style.dim(&format!(
+            "{indent}... (showing {shown} of {total}; use --all or -n N)"
+        ))
+    )
 }
 
 /// A labelled value. The label is padded before it is styled, because escape
