@@ -19,6 +19,21 @@ it and put `prefixtool` on your `PATH`. Each archive ships with a `.sha256`
 next to it. Builds are published for Linux (x86-64 gnu and static musl,
 arm64), macOS (Intel and Apple silicon) and Windows.
 
+### Homebrew
+
+```
+brew tap jiphex/network-prefix-cli https://github.com/jiphex/network-prefix-cli
+brew install jiphex/network-prefix-cli/prefixtool
+```
+
+The formula lives in this repository under `Formula/`, so the tap needs the
+repository URL spelled out - Homebrew otherwise goes looking for a repository
+called `homebrew-network-prefix-cli`. It installs the prebuilt binary for your
+platform, so there is no Rust toolchain and no compile.
+
+Homebrew clears the quarantine flag itself, so the macOS note below does not
+apply to a `brew install`.
+
 ### macOS
 
 The macOS binaries are ad-hoc signed but not notarized, so Gatekeeper will
@@ -237,6 +252,11 @@ published as pre-releases.
 For a second, explicit approval before the tag is created, add required
 reviewers to the `release` environment under Settings -> Environments. Without
 that the environment imposes no gate.
+
+The release also regenerates `Formula/prefixtool.rb` from the archives it just
+built and commits it to the default branch, so the Homebrew formula never
+lags behind a release. That job runs after the release is published, so if it
+cannot push, the release still stands and only the formula is stale.
 
 ## Tests
 

@@ -276,3 +276,51 @@ jobs:
           fi
           gh release view "$TAG" --json tagName,isPrerelease,assets \
             --jq '"published \(.tagName) prerelease=\(.isPrerelease) assets=\(.assets|length)"' 
+
+  # Runs after the release exists, so a failure here leaves the published
+  # release intact - it only means the formula is stale until the next one.
+  formula:
+    name: Update Homebrew formula
+    needs: [verify, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The formula lives on the default branch, not on the tag.
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Regenerate
+        run: scripts/update-formula.sh "${{ needs.verify.outputs.version }}" dist
+
+      - name: Commit
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Staged first: on the very first release the formula is untracked,
+          # and plain `git diff` does not notice a file git has never seen.
+          git add Formula
+          if git diff --cached --quiet -- Formula; then
+            echo "::notice::formula is already current for $TAG"
+            exit 0
+          fi
+          git commit -m "Update Homebrew formula for $TAG"
+          # Someone may have pushed while the six build jobs were running.
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "push failed (attempt $attempt); rebasing on the latest default branch"
+            git pull --rebase
+          done
+          echo "::error::could not push the updated formula"
+          exit 1
