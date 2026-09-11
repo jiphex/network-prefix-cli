@@ -1138,6 +1138,22 @@ mod tests {
     }
 
     #[test]
+    fn a_port_the_size_of_its_link_is_not_broken_out() {
+        // %1 is a contradiction and is refused, but %100G under a 100G link
+        // is a fair statement about the switch that happens to work out at
+        // one lane. It plans as an unsplit port rather than as an error.
+        let p = plan_of(8, &["@100G", "%100G"]);
+        assert_eq!(p.lanes, 1);
+        assert_eq!(p.arrangement, Arrangement::Straight);
+        assert_eq!(p.spare_lanes, 0);
+        assert!(
+            p.materials.iter().all(|i| !i.key.contains("breakout")),
+            "{:?}",
+            p.materials
+        );
+    }
+
+    #[test]
     fn a_splitter_needs_somewhere_for_its_modules_to_go() {
         // Both ends of a mesh link are lanes, so a DAC splitter has nothing
         // to plug into. That is a buildability problem, not a typo.

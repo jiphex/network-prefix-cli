@@ -85,6 +85,12 @@ pub enum Breakout {
 /// turn into a plan for an implausible harness.
 const MAX_LANES: u32 = 64;
 
+/// The most ports one switch ever gives up to the things attached to it.
+/// A dense leaf has 48 or 64 and a chassis a few hundred, so this leaves
+/// room for any of them and still catches a count typed into the wrong
+/// operator.
+const MAX_PORTS: u32 = 4096;
+
 /// Parse one command-line operator.
 pub fn parse(token: &str) -> Result<Op, String> {
     let Some(sigil) = token.chars().next() else {
@@ -161,12 +167,21 @@ fn access(payload: &str) -> Result<Access, String> {
             "'-{payload}' needs a speed as well as a count: write it like -48@25G"
         ));
     };
-    let ports: u32 = count
+    // Parsed wide so that a number too big to be a port count is answered
+    // by the limit below rather than by a complaint about the spelling.
+    let ports: u64 = count
         .parse()
         .map_err(|_| format!("'{count}' is not a number of ports: write it like -48@25G"))?;
     if ports == 0 {
         return Err("0 server ports is nothing hanging off it".into());
     }
+    if ports > u64::from(MAX_PORTS) {
+        return Err(format!(
+            "{ports} server ports on one switch is past what this will plan \
+             ({MAX_PORTS} is the limit)"
+        ));
+    }
+    let ports = ports as u32;
     let (speed, breakout) = match rest.split_once('%') {
         Some((speed, split)) => (speed, Some(breakout(split)?)),
         None => (rest, None),
@@ -197,12 +212,21 @@ fn budget(payload: &str) -> Result<Budget, String> {
         Some((count, speed)) => (count, Some(speed::parse(speed)?)),
         None => (payload, None),
     };
-    let ports: u32 = count.parse().map_err(|_| {
+    // Parsed wide for the same reason a server-port count is: a number past
+    // the limit deserves the limit as its answer.
+    let ports: u64 = count.parse().map_err(|_| {
         format!("'{count}' is not a port count: write it like =32, =4@100G or =4@100G:leaf")
     })?;
     if ports == 0 {
         return Err("a switch with 0 ports cannot be wired to anything".into());
     }
+    if ports > u64::from(MAX_PORTS) {
+        return Err(format!(
+            "a switch with {ports} ports is past what this will plan \
+             ({MAX_PORTS} is the limit)"
+        ));
+    }
+    let ports = ports as u32;
     Ok(Budget { ports, speed, role })
 }
 
@@ -367,6 +391,24 @@ mod tests {
         ] {
             assert!(parse(bad).is_err(), "{bad} should not parse");
         }
+    }
+
+    /// A count past what a switch could have is answered with the limit,
+    /// because the number is a fine number and only the switch is wrong.
+    #[test]
+    fn an_implausible_port_count_is_answered_with_the_limit() {
+        for bad in [
+            "-4097@25G",
+            "-1000000000000@25G",
+            "=4097",
+            "=4097@100G:leaf",
+        ] {
+            let e = parse(bad).unwrap_err();
+            assert!(e.contains("4096 is the limit"), "{bad}: {e}");
+        }
+        // The last plausible one still parses, so the limit is inclusive.
+        assert!(parse("-4096@25G").is_ok());
+        assert!(parse("=4096").is_ok());
     }
 
     /// A sigil that turns out to be a flag is answered with the flag, since
