@@ -14,7 +14,7 @@ programs, so a change to one of those modules is a change to both tools.
 
 ```
 cargo build
-cargo test --locked --all-targets      # 271 tests: 181 unit, 9 CLI, 81 end-to-end
+cargo test --locked --all-targets      # 277 tests: 185 unit, 9 CLI, 83 end-to-end
 cargo clippy --locked --all-targets
 cargo fmt --all --check
 ```
@@ -262,6 +262,13 @@ is what makes a fabric a leaf-spine, because there is no other shape the
 answer fits into, and `/leaf-spine +2` says the same thing twice. Giving a
 spine count to a shape that has none is an error rather than something to
 quietly ignore.
+
+A leaf-spine with no count is **a pair of spines**, not one, because that is
+how a rack is built: one spine is a single point of failure rather than a
+smaller fabric, and saying so is what the caution is for. The pair is also
+why `spine_loss` exists - a leaf keeps its other uplink when a spine goes, at
+twice the oversubscription, and that degraded ratio is the number somebody
+decides two spines is enough on.
 
 `:` is doing double duty, as the separator in `%a:b:c` and as the start of a
 carve's name, and IPv6 addresses are mostly colons. Two rules keep it

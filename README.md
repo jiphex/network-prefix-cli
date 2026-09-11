@@ -609,7 +609,7 @@ links, ports and cables; each operator adds something more it can say.
 | `%SPEED` | The same, worked out from the port speed instead of counted |
 | `xK`, `*K` | `K` parallel links between each pair |
 | `/SHAPE` | `/mesh` (the default), `/ring`, `/star` or `/leaf-spine` |
-| `+S` | `S` spines above the leaves, which makes it a leaf-spine |
+| `+S` | `S` spines above the leaves, which makes it a leaf-spine (a pair, by default) |
 | `-N@SPEED` | `N` server ports on each leaf, at that speed |
 | `-N@SPEED%P` | The same, out of `P` ports split into lanes to reach them |
 | `=N` | Each switch has `N` ports - does the plan fit? |
@@ -673,7 +673,7 @@ Cabling 8 switches at 100G
   Qty  Item                     Where
    56  100G transceiver         one in each end of every link
    28  duplex fibre patch lead  one per link
-   56  100G port                7 ports on each of 8 switches
+   56  100G switch port         7 ports on each of 8 switches
 ```
 
 Everything after the first two lines is a consequence of the shape.
@@ -713,7 +713,7 @@ Cabling 8 switches at 100G
    16  400G transceiver                 one in each trunk port
    16  400G to 4x100G breakout harness  one per trunk port, its lanes fanned out to that many peers
    28  duplex coupler                   one per link, where its two lanes meet in the patch field
-   16  400G port                        2 ports on each of 8 switches
+   16  400G switch port                 2 ports on each of 8 switches
 ```
 
 The same twenty-eight links, but sixteen transceivers instead of fifty-six,
@@ -753,8 +753,8 @@ Cabling 48 switches at 25G
 
   Qty  Item                        Where
    12  100G to 4x25G DAC splitter  one per hub port, a lane to each of 4 spokes
-   12  100G port                   12 ports on the hub
-   47  25G port                    1 port on each of 47 spokes
+   12  100G hub port               12 ports on the hub
+   47  25G spoke port              1 port on each of 47 spokes
 ```
 
 Ask for the same cable in a mesh and there is nothing for those ends to plug
@@ -807,8 +807,8 @@ Cabling 48 switches at 25G
    12  100G transceiver                one in each hub port
    12  100G to 4x25G breakout harness  one per hub port, a lane to each spoke
    47  25G transceiver                 one in each spoke port
-   12  100G port                       12 ports on the hub
-   47  25G port                        1 port on each of 47 spokes
+   12  100G hub port                   12 ports on the hub
+   47  25G spoke port                  1 port on each of 47 spokes
 
 Ports on a 32-port switch
   yes - it fits
@@ -822,8 +822,9 @@ separately. The hub is the one that runs out.
 ### Leaf-spine, servers, and oversubscription
 
 The shape most of this actually gets built in. `+2` puts two spines above the
-leaves - saying how many spines there are is what makes it a leaf-spine - and
-`-48@25G` says what is plugged into each leaf:
+leaves - saying how many spines there are is what makes it a leaf-spine, and a
+pair is what `/leaf-spine` means on its own, because that is how a rack gets
+built. `-48@25G` says what is plugged into each leaf:
 
 ```
 $ fabrictool 16 +2 @100G %400G -48@25G
@@ -843,6 +844,7 @@ $ fabrictool 16 +2 @100G %400G -48@25G
   Fabric total   3.2T  (32 x 100G, one direction)
   Hops           2  (worst case, switch to switch)
   Resilience     1 link may fail before the fabric splits
+  Spine loss     each leaf keeps 1 uplink of 2  (100G of 200G)
 
 Cabling 16 leaves + 2 spines at 100G
   Arrangement    each spine's 400G ports split 4 ways, a whole 100G port at each leaf
@@ -852,12 +854,13 @@ Cabling 16 leaves + 2 spines at 100G
     8  400G transceiver                 one in each spine port
     8  400G to 4x100G breakout harness  one per spine port, a lane to each leaf
    32  100G transceiver                 one in each leaf port
-    8  400G port                        4 ports on each of 2 spines
-   32  100G port                        2 ports on each of 16 leaves
-  768  25G port                         48 ports facing 48 servers on each of 16 leaves
+    8  400G spine port                  4 ports on each of 2 spines
+   32  100G leaf port                   2 ports on each of 16 leaves
+  768  25G leaf server port             48 ports facing 48 servers on each of 16 leaves
 
 Oversubscription
   Per leaf       6:1  (1.2T attached against 200G of fabric)
+  One spine down 12:1  (100G of fabric left on each leaf)
   Servers        768 x 25G  (19.2T attached in total)
 ```
 
@@ -871,6 +874,57 @@ $ for s in +2 +4 +6 +12; do fabrictool 16 $s @100G -48@25G | grep 'Per leaf'; do
   Per leaf       3:1  (1.2T attached against 400G of fabric)
   Per leaf       2:1  (1.2T attached against 600G of fabric)
   Per leaf       1:1  (1.2T attached against 1.2T of fabric - non-blocking)
+```
+
+**Spine loss** is the other half of buying a pair, and it is a line of its own:
+a leaf keeps one of its two uplinks when a spine goes, so it stays up and the
+ratio doubles. That is the number to check before deciding two spines is
+enough - 6:1 is a design, 12:1 during a spine reload is a decision.
+
+One spine is allowed and says what it is:
+
+```
+$ fabrictool 16 +1 @100G -48@25G
+  Caution        one spine is a single point of failure; a pair is the usual build
+```
+
+A rack is often just a pair of leaves under that pair of spines, which is four
+links and every leaf on every spine:
+
+```
+$ fabrictool 2 +2 @100G -48@25G
+2 leaves + 2 spines  -  leaf-spine at 100G
+
+  Switches       4  (2 leaves, 2 spines)
+  Topology       leaf-spine  (every leaf to every spine)
+  Links          4  (1 link from each leaf to each spine)
+  Link speed     100G
+  Per uplink     100G
+  Per switch     each spine 2 links, 200G
+                 each leaf 2 links, 200G
+  Ports          2 x 100G on each spine
+                 2 x 100G on each leaf
+  Server ports   48 x 25G on each leaf
+  Bisection      200G  (2 links across the middle)
+  Fabric total   400G  (4 x 100G, one direction)
+  Hops           2  (worst case, switch to switch)
+  Resilience     1 link may fail before the fabric splits
+  Spine loss     each leaf keeps 1 uplink of 2  (100G of 200G)
+
+Cabling 2 leaves + 2 spines at 100G
+  Arrangement    one 100G cable per link, a transceiver in each end
+
+  Qty  Item                     Where
+    8  100G transceiver         one in each end of every link
+    4  duplex fibre patch lead  one per link
+    4  100G spine port          2 ports on each of 2 spines
+    4  100G leaf port           2 ports on each of 2 leaves
+   96  25G leaf server port     48 ports facing 48 servers on each of 2 leaves
+
+Oversubscription
+  Per leaf       6:1  (1.2T attached against 200G of fabric)
+  One spine down 12:1  (100G of fabric left on each leaf)
+  Servers        96 x 25G  (2.4T attached in total)
 ```
 
 The spine side is the splitter arrangement again, and this is where it earns
@@ -897,6 +951,7 @@ $ fabrictool 32 +4 @100G %400G -48@25G =56
   Fabric total   12.8T  (128 x 100G, one direction)
   Hops           2  (worst case, switch to switch)
   Resilience     3 links may fail before the fabric splits
+  Spine loss     each leaf keeps 3 uplinks of 4  (300G of 400G)
 
 Cabling 32 leaves + 4 spines at 100G
   Arrangement    each spine's 400G ports split 4 ways, a whole 100G port at each leaf
@@ -906,12 +961,13 @@ Cabling 32 leaves + 4 spines at 100G
      32  400G transceiver                 one in each spine port
      32  400G to 4x100G breakout harness  one per spine port, a lane to each leaf
     128  100G transceiver                 one in each leaf port
-     32  400G port                        8 ports on each of 4 spines
-    128  100G port                        4 ports on each of 32 leaves
-  1,536  25G port                         48 ports facing 48 servers on each of 32 leaves
+     32  400G spine port                  8 ports on each of 4 spines
+    128  100G leaf port                   4 ports on each of 32 leaves
+  1,536  25G leaf server port             48 ports facing 48 servers on each of 32 leaves
 
 Oversubscription
   Per leaf       3:1  (1.2T attached against 400G of fabric)
+  One spine down 4:1  (300G of fabric left on each leaf)
   Servers        1,536 x 25G  (38.4T attached in total)
 
 Ports on a 56-port switch
@@ -953,7 +1009,7 @@ Cabling 8 switches at 100G
    16  400G transceiver                 one in each trunk port
    16  400G to 4x100G breakout harness  one per trunk port, its lanes fanned out to that many peers
    28  duplex coupler                   one per link, where its two lanes meet in the patch field
-   16  400G port                        2 ports on each of 8 switches
+   16  400G switch port                 2 ports on each of 8 switches
 
 Patch schedule for 8 switches
   Notation       sw<switch>:<port>/<lane>

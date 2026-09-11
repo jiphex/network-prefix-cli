@@ -169,11 +169,17 @@ impl Side {
     /// The ratio this kind of switch runs at, once there is a link speed to
     /// measure the fabric side with.
     pub fn ratio(&self, link: Option<Speed>) -> Option<Ratio> {
+        self.ratio_over(link, self.degree)
+    }
+
+    /// The same, against some other number of links - what is left after a
+    /// spine has gone, say.
+    pub fn ratio_over(&self, link: Option<Speed>, degree: u64) -> Option<Ratio> {
         let access = self.access?;
         let link = link?;
         Some(Ratio {
             down: access.speed.mbps() * access.servers,
-            up: link.mbps() * self.degree,
+            up: link.mbps() * degree,
         })
     }
 
@@ -255,6 +261,37 @@ pub struct Plan {
     pub cautions: Vec<String>,
 }
 
+/// What a leaf is left with when one spine is gone, which is the reason
+/// anyone buys the second one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SpineLoss {
+    /// Uplinks on a leaf before the loss.
+    pub uplinks: u64,
+    /// Uplinks on that leaf after it.
+    pub left: u64,
+}
+
+impl Plan {
+    /// The leaves, when the shape has any.
+    pub fn leaves(&self) -> Option<&Side> {
+        self.sides.iter().find(|s| s.role == Role::Leaf)
+    }
+
+    /// What losing one spine costs, for a fabric that has spines to lose. A
+    /// lone spine is not a loss anyone plans around - it is the fabric - so
+    /// it says nothing here and is flagged as a caution instead.
+    pub fn spine_loss(&self) -> Option<SpineLoss> {
+        let leaves = self.leaves()?;
+        if self.spines < 2 {
+            return None;
+        }
+        Some(SpineLoss {
+            uplinks: leaves.degree,
+            left: leaves.degree - self.per_pair,
+        })
+    }
+}
+
 /// The whole of what was asked for: the fabric, plus the questions about it.
 #[derive(Clone, Debug)]
 pub struct Report {
@@ -314,7 +351,10 @@ pub fn build(switches: u64, ops: &[Op], media: Media) -> Result<Report, Problem>
         (None, None) => Topology::default(),
     };
     let spines = match topology {
-        Topology::LeafSpine => spines.unwrap_or(1),
+        // A rack is built with a pair of spines, so that is what a
+        // leaf-spine means when nobody says otherwise. One is a single point
+        // of failure rather than a smaller fabric, and gets said so.
+        Topology::LeafSpine => spines.unwrap_or(2),
         _ => 0,
     };
     if switches + spines > MAX_SWITCHES {
@@ -562,6 +602,9 @@ fn plan(
             "a ring of two switches is a pair: there is one link between them, not two".into(),
         );
     }
+    if topology == Topology::LeafSpine && shape.spines == 1 {
+        cautions.push("one spine is a single point of failure; a pair is the usual build".into());
+    }
     if access.is_some() && speed.is_none() {
         cautions.push(
             "no link speed was given, so there is nothing to measure the servers against: \
@@ -792,7 +835,7 @@ fn materials(
         items.push(Item {
             quantity: side.switches * side.ports,
             key: keyed(&format!("port-{}", side.role.key()), side.port_speed),
-            label: format!("{}port", at(side.port_speed)),
+            label: format!("{}{} port", at(side.port_speed), side.role.singular()),
             note: format!("{} on {}", plural(side.ports, "port"), whose(side)),
         });
         if let Some(a) = side.access {
@@ -802,7 +845,7 @@ fn materials(
                     &format!("access-port-{}", side.role.key()),
                     Some(a.port_speed),
                 ),
-                label: format!("{} port", a.port_speed),
+                label: format!("{} {} server port", a.port_speed, side.role.singular()),
                 note: format!(
                     "{} facing {} on {}",
                     plural(a.ports, "port"),
@@ -1113,11 +1156,61 @@ mod tests {
     #[test]
     fn saying_how_many_spines_is_what_makes_it_a_leaf_spine() {
         assert_eq!(plan_of(8, &["+2"]).topology, Topology::LeafSpine);
-        assert_eq!(plan_of(8, &["/leaf-spine"]).spines, 1);
+        // A rack is built with a pair, so that is what the shape means when
+        // nobody says otherwise.
+        assert_eq!(plan_of(8, &["/leaf-spine"]).spines, 2);
+        assert_eq!(plan_of(8, &["/leaf-spine", "+4"]).spines, 4);
         // A shape that has no spines cannot be given any.
         let e = fails(8, &["/mesh", "+2"], Media::Optic);
         assert!(matches!(e, Problem::Input(_)), "{e:?}");
         assert!(e.to_string().contains("no spines"), "{e}");
+    }
+
+    #[test]
+    fn a_pair_of_spines_is_what_a_leaf_survives_losing_one_of() {
+        let p = plan_of(16, &["+2", "@100G", "-48@25G"]);
+        let loss = p.spine_loss().expect("a spine to lose");
+        assert_eq!((loss.uplinks, loss.left), (2, 1));
+        // Losing one halves the fabric a leaf has, so the ratio doubles.
+        let degraded = p
+            .leaves()
+            .unwrap()
+            .ratio_over(p.speed, loss.left)
+            .expect("a ratio");
+        assert_eq!((degraded.down, degraded.up), (1_200_000, 100_000));
+
+        // Two links to each of two spines is four uplinks, and a spine
+        // taking two of them with it.
+        let p = plan_of(16, &["+2", "x2", "@100G"]);
+        let loss = p.spine_loss().unwrap();
+        assert_eq!((loss.uplinks, loss.left), (4, 2));
+
+        // One spine is not a loss anyone plans around; it is the fabric.
+        let p = plan_of(16, &["+1", "@100G"]);
+        assert_eq!(p.spine_loss(), None);
+        assert!(
+            p.cautions
+                .iter()
+                .any(|c| c.contains("single point of failure")),
+            "{:?}",
+            p.cautions
+        );
+        // And a shape with no spines has none to lose.
+        assert_eq!(plan_of(16, &["@100G"]).spine_loss(), None);
+    }
+
+    /// The case a rack is actually built as: two leaves, a pair of spines,
+    /// and every leaf on every spine.
+    #[test]
+    fn a_pair_of_leaves_reaches_every_spine() {
+        for (leaves, spines) in [(2u64, 2u64), (2, 4), (4, 2), (8, 2)] {
+            let p = plan_of(leaves, &[&format!("+{spines}"), "@100G"]);
+            assert_eq!(p.links, leaves * spines, "{leaves} leaves, {spines} spines");
+            let leaf = p.leaves().expect("leaves");
+            assert_eq!(leaf.degree, spines, "a leaf reaches every spine");
+            assert_eq!(p.sides[0].degree, leaves, "a spine reaches every leaf");
+            assert_eq!(p.switches, leaves + spines);
+        }
     }
 
     #[test]

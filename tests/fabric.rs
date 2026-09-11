@@ -191,6 +191,40 @@ fn a_leaf_spine_counts_its_two_populations_apart() {
     assert!(s.contains("32  100G transceiver"), "{s}");
 }
 
+/// The arrangement a rack is actually built in: a pair of leaves under a
+/// pair of spines, every leaf on every spine.
+#[test]
+fn a_rack_is_a_pair_of_spines_and_survives_losing_one() {
+    let s = stdout(&["2", "+2", "@100G", "-48@25G", "--color=never"]);
+    assert!(
+        s.starts_with("2 leaves + 2 spines  -  leaf-spine at 100G"),
+        "{s}"
+    );
+    assert!(s.contains("Links          4"), "{s}");
+    assert!(s.contains("each leaf 2 links, 200G"), "{s}");
+    assert!(
+        s.contains("Spine loss     each leaf keeps 1 uplink of 2"),
+        "{s}"
+    );
+    assert!(s.contains("One spine down 12:1"), "{s}");
+    // Both leaves reach both spines, and nothing is wired twice.
+    let schedule = stdout(&["2", "+2", ".", "--all", "-q"]);
+    assert_eq!(
+        schedule,
+        "spine1:1 leaf1:1\nspine1:2 leaf2:1\nspine2:1 leaf1:2\nspine2:2 leaf2:2\n"
+    );
+}
+
+#[test]
+fn a_leaf_spine_is_a_pair_of_spines_unless_told_otherwise() {
+    let s = stdout(&["16", "/leaf-spine", "@100G", "--color=never"]);
+    assert!(s.starts_with("16 leaves + 2 spines"), "{s}");
+    // One is still allowed, and still says what it is.
+    let s = stdout(&["16", "+1", "@100G", "--color=never"]);
+    assert!(s.starts_with("16 leaves + 1 spine"), "{s}");
+    assert!(s.contains("single point of failure"), "{s}");
+}
+
 #[test]
 fn uplinks_change_the_ratio_and_nothing_else_about_the_servers() {
     let ratio = |spines: &str| {

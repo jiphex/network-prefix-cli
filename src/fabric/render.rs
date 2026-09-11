@@ -193,6 +193,32 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         ),
     )?;
     field(w, o, "Resilience", &resilience(p))?;
+    // The reason anyone buys the second spine, said in the terms they buy it
+    // in: what a leaf still has when one of them is gone.
+    if let Some(loss) = p.spine_loss() {
+        field(
+            w,
+            o,
+            "Spine loss",
+            &match p.speed {
+                Some(sp) => format!(
+                    "each leaf keeps {} of {}  {}",
+                    plural(loss.left, "uplink"),
+                    loss.uplinks,
+                    o.style.dim(&format!(
+                        "({} of {})",
+                        sp.total(loss.left),
+                        sp.total(loss.uplinks)
+                    ))
+                ),
+                None => format!(
+                    "each leaf keeps {} of {}",
+                    plural(loss.left, "uplink"),
+                    loss.uplinks
+                ),
+            },
+        )?;
+    }
     for c in &p.cautions {
         field(w, o, "Caution", &o.style.warn(c))?;
     }
@@ -357,6 +383,25 @@ fn oversubscription(w: &mut impl Write, p: &Plan, o: &Opts) -> io::Result<()> {
                 ),
             )?,
         }
+    }
+    // A ratio that only holds while every spine is up is half a ratio.
+    if let (Some(loss), Some(leaves)) = (p.spine_loss(), p.leaves())
+        && let Some(degraded) = leaves.ratio_over(p.speed, loss.left)
+    {
+        field(
+            w,
+            o,
+            "One spine down",
+            &format!(
+                "{}  {}",
+                verdict(&degraded),
+                o.style.dim(&format!(
+                    "({} of fabric left on each leaf)",
+                    p.speed
+                        .map_or(String::new(), |sp| sp.total(loss.left).to_string())
+                ))
+            ),
+        )?;
     }
     let total: u64 = with_access
         .iter()
@@ -657,6 +702,31 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         ("hops", json::n(p.hops)),
         ("resilience_links", json::n(p.resilience)),
         (
+            "spine_loss",
+            match p.spine_loss() {
+                None => J::Null,
+                Some(loss) => J::Obj(vec![
+                    ("uplinks_per_leaf", json::n(loss.uplinks)),
+                    ("uplinks_left", json::n(loss.left)),
+                    (
+                        "fabric_left_mbps",
+                        p.speed.map_or(J::Null, |sp| json::n(sp.mbps() * loss.left)),
+                    ),
+                    (
+                        "oversubscription_mbps",
+                        match p.leaves().and_then(|l| l.ratio_over(p.speed, loss.left)) {
+                            None => J::Null,
+                            Some(r) => J::Obj(vec![
+                                ("attached_mbps", json::n(r.down)),
+                                ("fabric_mbps", json::n(r.up)),
+                                ("blocking", J::Bool(r.blocking())),
+                            ]),
+                        },
+                    ),
+                ]),
+            },
+        ),
+        (
             "switch_roles",
             J::Arr(
                 p.sides
@@ -886,6 +956,8 @@ mod tests {
             (2, vec![]),
             (16, vec!["@300G", "%3", "=8"]),
             (16, vec!["+2", "@100G", "%400G", "-48@25G", "=56", "."]),
+            (2, vec!["+2", "@100G", "-48@25G"]),
+            (16, vec!["+1", "@100G", "-48@25G"]),
             (16, vec!["+12", "@100G", "-48@25G%100G", "=64"]),
             (8, vec!["-24@10G"]),
         ] {
@@ -965,6 +1037,14 @@ mod tests {
             s,
             "16\ttransceiver-400G\n16\tbreakout-1x4-400G\n28\tcoupler-100G\n16\tport-switch-400G\n"
         );
+        // The keys are the interface, so a leaf-spine's are spelled out too:
+        // 32 links, two ends each, and 16 ports on each of two spines.
+        let s = quieted(16, &["+2", "@100G", "-48@25G"]);
+        assert_eq!(
+            s,
+            "64\ttransceiver-100G\n32\tpatch-lead\n32\tport-spine-100G\n\
+             32\tport-leaf-100G\n768\taccess-port-leaf-25G\n"
+        );
     }
 
     #[test]
@@ -1031,6 +1111,44 @@ mod tests {
     }
 
     #[test]
+    fn a_spine_pair_says_what_losing_one_costs() {
+        let s = rendered(16, &["+2", "@100G", "-48@25G"]);
+        assert!(
+            s.contains("Spine loss     each leaf keeps 1 uplink of 2  (100G of 200G)"),
+            "{s}"
+        );
+        assert!(
+            s.contains("One spine down 12:1  (100G of fabric left on each leaf)"),
+            "{s}"
+        );
+        // One spine has nothing to lose, and is a caution rather than a row.
+        let s = rendered(16, &["+1", "@100G", "-48@25G"]);
+        assert!(!s.contains("Spine loss"), "{s}");
+        assert!(!s.contains("One spine down"), "{s}");
+        assert!(
+            s.contains("Caution        one spine is a single point of failure"),
+            "{s}"
+        );
+        // And a shape without spines never mentions them.
+        assert!(!rendered(8, &["@100G", "-24@10G"]).contains("Spine loss"));
+    }
+
+    #[test]
+    fn a_rack_of_two_leaves_reaches_both_spines() {
+        let s = rendered(2, &["+2", "@100G", "-48@25G"]);
+        assert!(
+            s.starts_with("2 leaves + 2 spines  -  leaf-spine at 100G\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("Links          4  (1 link from each leaf to each spine)"),
+            "{s}"
+        );
+        assert!(s.contains("each leaf 2 links, 200G"), "{s}");
+        assert!(s.contains("2 x 100G on each spine"), "{s}");
+    }
+
+    #[test]
     fn a_budget_breaks_down_a_switch_whose_ports_differ() {
         let s = rendered(16, &["+2", "@100G", "-48@25G", "=56"]);
         assert!(
@@ -1083,6 +1201,9 @@ mod tests {
             "\"attached_mbps\": 1200000",
             "\"fabric_mbps\": 200000",
             "\"blocking\": true",
+            "\"uplinks_per_leaf\": 2",
+            "\"uplinks_left\": 1",
+            "\"fabric_left_mbps\": 100000",
         ] {
             assert!(s.contains(want), "{want} missing from {s}");
         }
