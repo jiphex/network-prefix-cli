@@ -11,6 +11,7 @@
 //!   -48@25G%100G  the same, out of 100G ports split four ways
 //!   =32       each switch has 32 ports - does this fit?
 //!   =4@100G   the same, about the four ports it has at one speed
+//!   =4@100G:leaf  the same, about the leaves rather than whatever matches
 //! ```
 //!
 //! An operator carries a number, a speed or both. A choice from a fixed list,
@@ -25,6 +26,7 @@
 //! with a unit is a port speed, which is why `%4` and `%400G` mean different
 //! things and neither has to be guessed at.
 
+use super::Role;
 use super::speed::{self, Speed};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +56,9 @@ pub struct Budget {
     /// The speed those ports run at, when the question is about one kind of
     /// port rather than the whole panel.
     pub speed: Option<Speed>,
+    /// The switches it is about, when the speed does not pick them out on its
+    /// own - a leaf and a spine with ports at the same speed, say.
+    pub role: Option<Role>,
 }
 
 /// Ports facing whatever hangs off the fabric, as the user wrote them.
@@ -173,19 +178,32 @@ fn access(payload: &str) -> Result<Access, String> {
     })
 }
 
-/// `=32`, or `=4@100G` for the ports at one speed.
+/// `=32`, `=4@100G` for the ports at one speed, and `:leaf` on either to say
+/// which switches are being asked about.
+///
+/// The role comes off first: a speed never contains a colon, and a role never
+/// contains an `@`, so there is no order to guess at.
 fn budget(payload: &str) -> Result<Budget, String> {
+    let (payload, role) = match payload.split_once(':') {
+        Some((rest, role)) => (
+            rest,
+            Some(Role::parse(role).ok_or_else(|| {
+                format!("'{role}' is not a kind of switch: it is {}", Role::names())
+            })?),
+        ),
+        None => (payload, None),
+    };
     let (count, speed) = match payload.split_once('@') {
         Some((count, speed)) => (count, Some(speed::parse(speed)?)),
         None => (payload, None),
     };
-    let ports: u32 = count
-        .parse()
-        .map_err(|_| format!("'{count}' is not a port count: write it like =32 or =4@100G"))?;
+    let ports: u32 = count.parse().map_err(|_| {
+        format!("'{count}' is not a port count: write it like =32, =4@100G or =4@100G:leaf")
+    })?;
     if ports == 0 {
         return Err("a switch with 0 ports cannot be wired to anything".into());
     }
-    Ok(Budget { ports, speed })
+    Ok(Budget { ports, speed, role })
 }
 
 /// Whether a bare argument is an operator rather than a flag or the switch
@@ -276,7 +294,8 @@ mod tests {
             p("=32"),
             Op::Budget(Budget {
                 ports: 32,
-                speed: None
+                speed: None,
+                role: None,
             })
         );
         assert_eq!(
@@ -284,8 +303,28 @@ mod tests {
             Op::Budget(Budget {
                 ports: 4,
                 speed: Some(speed::parse("100G").unwrap()),
+                role: None,
             })
         );
+        // And the switches it is about, when the speed does not say.
+        assert_eq!(
+            p("=4@100G:leaf"),
+            Op::Budget(Budget {
+                ports: 4,
+                speed: Some(speed::parse("100G").unwrap()),
+                role: Some(Role::Leaf),
+            })
+        );
+        assert_eq!(
+            p("=32:spine"),
+            Op::Budget(Budget {
+                ports: 32,
+                speed: None,
+                role: Some(Role::Spine),
+            })
+        );
+        // Plurals read better in some sentences, so both are accepted.
+        assert_eq!(p("=32:leaves"), p("=32:leaf"));
     }
 
     #[test]
@@ -320,6 +359,9 @@ mod tests {
             "=0@100G",
             "=4@banana",
             "=lots@100G",
+            "=4@100G:banana",
+            "=4:",
+            "=:leaf",
             "-48@25G%0",
             "-48@25G%banana",
         ] {

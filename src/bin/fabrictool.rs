@@ -19,6 +19,7 @@ OPERATORS:
   -N@SPEED%P    the same, out of P ports split into lanes to reach them
   =N            each switch has N ports - does the plan fit?
   =N@SPEED      the same, about the N ports it has at one speed
+  =N@SPEED:WHO  the same, about one kind of switch: leaf, spine, hub, spoke
 
   An operator carries a number, a speed or both. A choice from a fixed list -
   the shape of the fabric, what its links are made of - is a flag instead, so
@@ -39,8 +40,11 @@ OPERATORS:
 
   A real switch is specified by what it has at each speed - 48 at 25G, four
   at 100G, two at 200G - so =N@SPEED asks about one kind of port at a time,
-  and a bare =N asks about the whole front panel. Several of either may be
-  given; under --quiet any one of them not fitting is the exit status.
+  and a bare =N asks about the whole front panel. A speed is usually enough
+  to say which switches are meant, since only one kind of switch has ports at
+  it; where two do - leaves and spines both at 100G - :leaf or :spine says
+  which. Several questions may be given; under --quiet any one of them not
+  fitting is the exit status.
 
   Server ports are the other half of an oversubscription ratio: what is
   attached to a switch against what leaves it. They sit on whichever
@@ -80,6 +84,10 @@ EXAMPLES:
         eight leaves on four spines, checked against the front panel each
         switch really has: 32 ports at 400G on the spines, and 48 at 25G
         with four at 100G on the leaves
+
+  fabrictool 8 +2 @100G =4@100G:leaf =32@100G:spine
+        the same question where both kinds of switch have 100G ports, so
+        each one has to say which switches it is about
 
   fabrictool 8 @100G %400G --schedule --all
         the schedule to take to the rack, every link of it

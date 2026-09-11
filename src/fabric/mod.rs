@@ -83,6 +83,64 @@ impl Topology {
     }
 }
 
+/// What a switch in a given part of the fabric has to hold. A mesh and a ring
+/// have one of these; a star has two, because its hub and its spokes are not
+/// the same shape.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Role {
+    Every,
+    Hub,
+    Spoke,
+    Spine,
+    Leaf,
+}
+
+impl Role {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Role::Every => "each switch",
+            Role::Hub => "the hub",
+            Role::Spoke => "each spoke",
+            Role::Spine => "each spine",
+            Role::Leaf => "each leaf",
+        }
+    }
+
+    /// The role as a bare noun, for a label that supplies its own article:
+    /// "Per leaf" rather than "Per each leaf".
+    pub fn singular(&self) -> &'static str {
+        match self {
+            Role::Every => "switch",
+            Role::Hub => "hub",
+            Role::Spoke => "spoke",
+            Role::Spine => "spine",
+            Role::Leaf => "leaf",
+        }
+    }
+
+    pub fn key(&self) -> &'static str {
+        self.singular()
+    }
+
+    /// A role as somebody writes it when naming one: singular or plural, and
+    /// `switch` for the shapes where every switch is the same.
+    pub fn parse(s: &str) -> Option<Role> {
+        match s.to_ascii_lowercase().as_str() {
+            "switch" | "switches" | "every" | "all" => Some(Role::Every),
+            "hub" | "hubs" => Some(Role::Hub),
+            "spoke" | "spokes" => Some(Role::Spoke),
+            "spine" | "spines" => Some(Role::Spine),
+            "leaf" | "leaves" | "leafs" => Some(Role::Leaf),
+            _ => None,
+        }
+    }
+
+    /// Every name this accepts, for an error that has to list them.
+    pub fn names() -> &'static str {
+        "switch, hub, spoke, spine or leaf"
+    }
+}
+
 /// What the link is physically made of.
 ///
 /// This is not decoration: it decides whether there are transceivers to count

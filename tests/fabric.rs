@@ -304,6 +304,47 @@ fn a_real_build_is_checked_against_the_leaf_it_has() {
     );
 }
 
+/// A speed picks out a kind of switch in most fabrics; where it does not,
+/// the question has to be able to say which switches it is about.
+#[test]
+fn a_budget_can_name_the_switches_it_is_about() {
+    // Leaves and spines both at 100G here, so the speed alone cannot separate
+    // them: the leaves fit four ports and the spines do not.
+    let s = stdout(&["8", "+2", "@100G", "=4@100G:leaf", "--color=never"]);
+    assert!(s.contains("100G ports on a 4-port leaf"), "{s}");
+    assert!(
+        s.contains("each leaf  2 of 4 ports at 100G, 2 spare"),
+        "{s}"
+    );
+    // The report still describes both kinds of switch; it is the answer to
+    // the question that is about leaves alone.
+    let answer = s
+        .split("100G ports on a 4-port leaf")
+        .nth(1)
+        .expect("the budget section");
+    assert!(!answer.contains("each spine"), "{s}");
+
+    let out = run(&["8", "+2", "@100G", "=4@100G:spine", "--color=never"]);
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("100G ports on a 4-port spine"), "{s}");
+    assert!(s.contains("no - each spine is 4 short"), "{s}");
+    assert_eq!(
+        run(&["8", "+2", "@100G", "=4@100G:spine", "-q"])
+            .status
+            .code(),
+        Some(4)
+    );
+
+    // A kind of switch the fabric has not got is a misunderstanding of the
+    // fabric, not a plan that does not fit, so it is refused.
+    let out = run(&["8", "@100G", "=32:leaf"]);
+    assert_eq!(out.status.code(), Some(1));
+    let e = String::from_utf8(out.stderr).unwrap();
+    assert!(e.contains("a full mesh has no leaves"), "{e}");
+    assert!(e.contains("it has 8 switches"), "{e}");
+    assert!(stderr(&["8", "+2", "@100G", "=4@100G:banana"]).contains("not a kind of switch"));
+}
+
 #[test]
 fn servers_hang_off_the_edge_of_whatever_shape_it_is() {
     assert!(stdout(&["8", "-24@10G", "@100G", "--color=never"]).contains("on each switch"));

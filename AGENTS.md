@@ -14,7 +14,7 @@ programs, so a change to one of those modules is a change to both tools.
 
 ```
 cargo build
-cargo test --locked --all-targets      # 290 tests: 195 unit, 10 CLI, 85 end-to-end
+cargo test --locked --all-targets      # 294 tests: 198 unit, 10 CLI, 86 end-to-end
 cargo clippy --locked --all-targets
 cargo fmt --all --check
 ```
@@ -290,12 +290,21 @@ answer fits into, and `/leaf-spine +2` says the same thing twice. Giving a
 spine count to a shape that has none is an error rather than something to
 quietly ignore.
 
-`=N` is about the whole front panel and `=N@SPEED` about the ports at one
-speed. The second exists because a real switch is specified that way - 48 at
-25G, four at 100G, two at 200G - and a single total cannot answer whether a
-plan fits one: four 200G uplinks fit a 54-port leaf and do not fit its two
-200G ports. A speed nothing runs at is answered as such rather than silently
-fitting.
+`=N` is about the whole front panel, `=N@SPEED` about the ports at one speed,
+and `=N@SPEED:leaf` about one kind of switch's ports at one speed. The second
+exists because a real switch is specified that way - 48 at 25G, four at 100G,
+two at 200G - and a single total cannot answer whether a plan fits one: four
+200G uplinks fit a 54-port leaf and do not fit its two 200G ports. A speed
+nothing runs at is answered as such rather than silently fitting.
+
+The third exists because a speed picks out a kind of switch in most fabrics
+but not all: leaves and spines both at 100G is an ordinary build, and without
+a role the answer covers both. A role the fabric has not got is refused rather
+than answered yes, since it means the question was asked of the wrong fabric.
+
+`Role` lives in `fabric/mod.rs` alongside `Topology` and `Media` rather than
+in `plan.rs`, because the grammar has to name one, and a parser reaching into
+the planner for its vocabulary is the wrong way round.
 
 A leaf-spine with no count is **a pair of spines**, not one, because that is
 how a rack is built: one spine is a single point of failure rather than a

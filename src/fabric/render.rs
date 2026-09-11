@@ -580,9 +580,15 @@ fn budget(w: &mut impl Write, p: &Plan, b: &Budget, o: &Opts) -> io::Result<()> 
     heading(
         w,
         o,
-        &match b.speed {
-            Some(at) => format!("{at} ports on a {}-port switch", b.ports),
-            None => format!("Ports on a {}-port switch", b.ports),
+        // Naming the kind of switch in the heading is what makes a stack of
+        // these readable: "on a 4-port leaf" rather than four "on a ...-port
+        // switch" in a row.
+        &{
+            let switch = b.role.map_or("switch", |r| r.singular());
+            match b.speed {
+                Some(at) => format!("{at} ports on a {}-port {switch}", b.ports),
+                None => format!("Ports on a {}-port {switch}", b.ports),
+            }
         },
     )?;
     let verdict = if b.fits() {
@@ -593,9 +599,10 @@ fn budget(w: &mut impl Write, p: &Plan, b: &Budget, o: &Opts) -> io::Result<()> 
     let why = match b.sides.iter().find(|s| s.short > 0) {
         // A question about a kind of port nothing uses is answered rather
         // than left to be inferred from an empty list.
-        None if b.sides.is_empty() => match b.speed {
-            Some(at) => format!("nothing in this plan uses a port at {at}"),
-            None => "it fits".to_string(),
+        None if b.sides.is_empty() => match (b.speed, b.role) {
+            (Some(at), Some(role)) => format!("{} uses no port at {at}", role.label()),
+            (Some(at), None) => format!("nothing in this plan uses a port at {at}"),
+            (None, _) => "it fits".to_string(),
         },
         None => "it fits".to_string(),
         Some(s) if p.sides.len() > 1 => format!("{} is {} short", s.role.label(), s.short),
@@ -853,6 +860,7 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                     J::Obj(vec![
                         ("ports", json::n(b.ports)),
                         ("speed_mbps", b.speed.map_or(J::Null, |s| json::n(s.mbps()))),
+                        ("role", b.role.map_or(J::Null, |r| json::s(r.key()))),
                         ("fits", J::Bool(b.fits())),
                         (
                             "roles",
@@ -1235,6 +1243,27 @@ mod tests {
             s.contains("yes - nothing in this plan uses a port at 400G"),
             "{s}"
         );
+    }
+
+    #[test]
+    fn a_budget_that_names_a_switch_says_so_in_its_heading() {
+        // Leaves and spines both at 100G, so the role is what separates them.
+        let s = rendered(8, &["+2", "@100G", "=4@100G:leaf", "=4@100G:spine"]);
+        assert!(
+            s.contains(
+                "100G ports on a 4-port leaf\n  yes - it fits\n  \
+                 each leaf  2 of 4 ports at 100G, 2 spare"
+            ),
+            "{s}"
+        );
+        assert!(
+            s.contains("100G ports on a 4-port spine\n  no - each spine is 4 short"),
+            "{s}"
+        );
+        // A named role with nothing at that speed says which role, rather
+        // than only that nothing does.
+        let s = rendered(8, &["+2", "@100G", "=4@400G:leaf"]);
+        assert!(s.contains("yes - each leaf uses no port at 400G"), "{s}");
     }
 
     #[test]

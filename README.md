@@ -610,6 +610,7 @@ links, ports and cables; each operator adds something more it can say.
 | `-N@SPEED%P` | The same, out of `P` ports split into lanes to reach them |
 | `=N` | Each switch has `N` ports - does the plan fit? |
 | `=N@SPEED` | The same, about the `N` ports it has at one speed |
+| `=N@SPEED:WHO` | The same, about one kind of switch: `leaf`, `spine`, `hub`, `spoke` |
 
 An operator carries a number, a speed or both. A choice from a fixed list -
 the shape of the fabric, what its links are made of - is a flag instead, so
@@ -1006,12 +1007,64 @@ actually specified:
 profile="=32@400G =4@100G =2@200G =48@25G"
 ```
 
-Nothing in that says which switch is which, and nothing has to: each question
-is answered by whichever switches have ports at that speed, and the answer
-names them. `=32@400G` is about the spines because the spines are what has
-400G ports; `=4@100G` and `=48@25G` are about the leaves for the same reason.
-A speed no switch runs at is answered as such rather than counted as a fit,
-so a profile that does not match the plan says so instead of passing quietly.
+Nothing in that says which switch is which, and here nothing has to: each
+question is answered by whichever switches have ports at that speed, and the
+answer names them. `=32@400G` is about the spines because the spines are what
+has 400G ports; `=4@100G` and `=48@25G` are about the leaves for the same
+reason. A speed no switch runs at is answered as such rather than counted as a
+fit, so a profile that does not match the plan says so instead of passing
+quietly.
+
+Where a speed is not enough - leaves and spines both with 100G ports is an
+ordinary build - `:leaf` or `:spine` says which switches the question is
+about, and the heading says which it answered:
+
+```
+$ fabrictool 8 +2 @100G =4@100G:leaf =4@100G:spine
+8 leaves + 2 spines  -  leaf-spine at 100G
+
+  Switches       10  (8 leaves, 2 spines)
+  Topology       leaf-spine  (every leaf to every spine)
+  Links          16  (1 link from each leaf to each spine)
+  Link speed     100G
+  Per uplink     100G
+  Per switch     each spine 8 links, 800G
+                 each leaf 2 links, 200G
+  Ports          8 x 100G on each spine
+                 2 x 100G on each leaf
+  Bisection      800G  (8 links across the middle)
+  Fabric total   1.6T  (16 x 100G, one direction)
+  Hops           2  (leaf to spine to leaf)
+  Resilience     1 link may fail before the fabric splits
+  Spine loss     each leaf keeps 1 uplink of 2  (100G of 200G)
+
+Cabling 8 leaves + 2 spines at 100G
+  Arrangement    one 100G cable per link, a transceiver in each end
+
+  Qty  Item                     Where
+  ---  -----------------------  -----------------------------
+   32  100G transceiver         one in each end of every link
+   16  duplex fibre patch lead  one per link
+   16  100G spine port          8 ports on each of 2 spines
+   16  100G leaf port           2 ports on each of 8 leaves
+
+100G ports on a 4-port leaf
+  yes - it fits
+  each leaf  2 of 4 ports at 100G, 2 spare
+
+100G ports on a 4-port spine
+  no - each spine is 4 short
+  each spine  8 of 4 ports at 100G, 4 short
+```
+
+A kind of switch the fabric has not got is refused rather than answered yes,
+because it means the question was asked of the wrong fabric:
+
+```
+$ fabrictool 8 @100G =32:leaf; echo $?
+fabrictool: a full mesh has no leaves: it has 8 switches
+1
+```
 
 **One 100G link per spine port.** The simplest cabling: a 100G transceiver at
 each end and a fibre between them, no breakout and no patch field. It costs

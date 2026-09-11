@@ -68,51 +68,7 @@ pub enum Arrangement {
     SplitUpstream,
 }
 
-/// What a switch in a given part of the fabric has to hold. A mesh and a ring
-/// have one of these; a star has two, because its hub and its spokes are not
-/// the same shape.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Role {
-    Every,
-    Hub,
-    Spoke,
-    Spine,
-    Leaf,
-}
-
-impl Role {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Role::Every => "each switch",
-            Role::Hub => "the hub",
-            Role::Spoke => "each spoke",
-            Role::Spine => "each spine",
-            Role::Leaf => "each leaf",
-        }
-    }
-
-    /// The role as a bare noun, for a label that supplies its own article:
-    /// "Per leaf" rather than "Per each leaf".
-    pub fn singular(&self) -> &'static str {
-        match self {
-            Role::Every => "switch",
-            Role::Hub => "hub",
-            Role::Spoke => "spoke",
-            Role::Spine => "spine",
-            Role::Leaf => "leaf",
-        }
-    }
-
-    pub fn key(&self) -> &'static str {
-        match self {
-            Role::Every => "switch",
-            Role::Hub => "hub",
-            Role::Spoke => "spoke",
-            Role::Spine => "spine",
-            Role::Leaf => "leaf",
-        }
-    }
-}
+pub use super::Role;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Side {
@@ -206,10 +162,13 @@ pub struct Item {
 /// A bare `=N` is about the whole front panel. `=N@SPEED` is about the ports
 /// at one speed, which is how a real switch is specified - 48 at 25G, four at
 /// 100G, two at 200G - and the only way to ask whether a plan fits one.
+/// `:leaf` on either says which switches are being asked about, for the
+/// fabrics where a speed does not pick them out on its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Budget {
     pub ports: u64,
     pub speed: Option<Speed>,
+    pub role: Option<Role>,
     /// Only the kinds of switch that use a port of that speed at all. A
     /// question about 400G ports has nothing to say about a leaf that has
     /// none.
@@ -395,7 +354,10 @@ pub fn build(switches: u64, ops: &[Op], opts: Options) -> Result<Report, Problem
         per_pair,
     };
     let plan = plan(shape, speed, breakout, access, opts.media)?;
-    let budgets = budgets.into_iter().map(|n| budget(&plan, n)).collect();
+    let budgets = budgets
+        .into_iter()
+        .map(|b| budget(&plan, b))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Report {
         plan,
         budgets,
@@ -893,6 +855,15 @@ fn whose(side: &Side) -> String {
     }
 }
 
+/// The plural of a noun on its own, for a sentence that does not count it.
+fn plural_of(what: &str) -> String {
+    match what {
+        "switch" => "switches".to_string(),
+        "leaf" => "leaves".to_string(),
+        w => format!("{w}s"),
+    }
+}
+
 fn plural(n: u64, what: &str) -> String {
     let plural = match what {
         "switch" => "switches".to_string(),
@@ -902,11 +873,31 @@ fn plural(n: u64, what: &str) -> String {
     format!("{n} {}", if n == 1 { what.to_string() } else { plural })
 }
 
-fn budget(plan: &Plan, asked: ops::Budget) -> Budget {
+fn budget(plan: &Plan, asked: ops::Budget) -> Result<Budget, Problem> {
     let ports = u64::from(asked.ports);
+    // A question about a kind of switch the fabric does not have is a
+    // misunderstanding of the fabric rather than a plan that does not fit, so
+    // it is refused rather than answered yes.
+    if let Some(role) = asked.role
+        && !plan.sides.iter().any(|s| s.role == role)
+    {
+        return Err(Problem::Input(format!(
+            "a {} has no {}: it has {}",
+            plan.topology,
+            plural_of(role.singular()),
+            english_list(
+                &plan
+                    .sides
+                    .iter()
+                    .map(|s| plural(s.switches, s.role.singular()))
+                    .collect::<Vec<_>>()
+            )
+        )));
+    }
     let sides = plan
         .sides
         .iter()
+        .filter(|s| asked.role.is_none_or(|role| s.role == role))
         .filter_map(|s| {
             // Servers and the fabric come out of the same front panel, so
             // what has to fit is both of them together - and when the
@@ -935,10 +926,21 @@ fn budget(plan: &Plan, asked: ops::Budget) -> Budget {
             })
         })
         .collect();
-    Budget {
+    Ok(Budget {
         ports,
         speed: asked.speed,
+        role: asked.role,
         sides,
+    })
+}
+
+/// "16 leaves and 2 spines", for an error that has to say what a fabric does
+/// have after saying what it does not.
+fn english_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -1385,8 +1387,10 @@ mod tests {
                     ops::Budget {
                         ports: 1_000,
                         speed: None,
+                        role: None,
                     },
-                );
+                )
+                .expect("a budget about every switch");
                 for (b, side) in budget.sides.iter().zip(&p.sides) {
                     assert_eq!(b.needed, side.total_ports(), "{switches} {args:?}");
                     assert_eq!(b.fabric, side.ports);
@@ -1429,6 +1433,59 @@ mod tests {
         // Nothing runs at 200G, and that is an answer rather than a fit.
         assert!(none_200.sides.is_empty());
         assert!(none_200.fits());
+    }
+
+    /// A speed picks out a kind of switch in most fabrics, but not in one
+    /// where two roles have ports at the same speed. Naming the role says
+    /// which is being asked about.
+    #[test]
+    fn a_budget_can_name_the_switches_it_is_about() {
+        // Leaves and spines both at 100G: the speed alone cannot separate
+        // them, and without a role the question is about both.
+        let both = built(8, &["+2", "@100G", "=4@100G"], Media::Optic).expect("plans");
+        assert_eq!(both.budgets[0].sides.len(), 2);
+
+        let leaves = built(8, &["+2", "@100G", "=4@100G:leaf"], Media::Optic).expect("plans");
+        assert_eq!(leaves.budgets[0].sides.len(), 1);
+        assert_eq!(leaves.budgets[0].sides[0].role, Role::Leaf);
+        assert_eq!(leaves.budgets[0].sides[0].needed, 2);
+        assert!(leaves.budgets[0].fits());
+
+        // The spines of that same fabric need a port per leaf, and eight
+        // does not fit in four.
+        let spines = built(8, &["+2", "@100G", "=4@100G:spine"], Media::Optic).expect("plans");
+        assert_eq!(spines.budgets[0].sides[0].role, Role::Spine);
+        assert_eq!(
+            (
+                spines.budgets[0].sides[0].needed,
+                spines.budgets[0].sides[0].short
+            ),
+            (8, 4)
+        );
+        assert!(!spines.budgets[0].fits());
+
+        // A role with no ports at that speed is answered, not counted as a
+        // fit by default.
+        let none = built(8, &["+2", "@100G", "=4@400G:leaf"], Media::Optic).expect("plans");
+        assert!(none.budgets[0].sides.is_empty());
+    }
+
+    #[test]
+    fn a_kind_of_switch_the_fabric_has_not_got_is_refused() {
+        for (args, missing) in [
+            (vec!["@100G", "=32:leaf"], "leaves"),
+            (vec!["@100G", "=32:spine"], "spines"),
+            (vec!["/star", "@100G", "=32:spine"], "spines"),
+            (vec!["+2", "@100G", "=32:hub"], "hubs"),
+        ] {
+            let e = fails(8, &args, Media::Optic);
+            assert!(matches!(e, Problem::Input(_)), "{args:?}: {e:?}");
+            assert!(e.to_string().contains(missing), "{args:?}: {e}");
+            // And says what it does have, so the next try is an informed one.
+            assert!(e.to_string().contains("it has"), "{args:?}: {e}");
+        }
+        // The shapes where every switch is alike answer to `switch`.
+        assert!(built(8, &["@100G", "=32:switch"], Media::Optic).is_ok());
     }
 
     #[test]
