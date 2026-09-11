@@ -383,7 +383,7 @@ fn dot_draws_the_fabric() {
     );
     // Every leaf on every spine, and one edge per pair.
     assert_eq!(s.matches(" -- ").count(), 8);
-    // Never coloured: it is another program's input.
+    // It is never coloured, because it is another program's input.
     let painted = stdout(&["4", "+2", "@100G", "--dot", "--color=always"]);
     assert!(!painted.contains('\x1b'), "{painted}");
     // With --schedule it draws a cable at a time, ports and all.
@@ -393,7 +393,7 @@ fn dot_draws_the_fabric() {
 
 #[test]
 fn a_fabric_that_cannot_be_built_is_not_the_same_as_bad_input() {
-    // A splitter DAC into a mesh: coherent, and nothing to plug it into.
+    // A splitter DAC into a mesh is coherent, and has nothing to plug into.
     let out = run(&["8", "@100G", "%400G", "--media=dac"]);
     assert_eq!(out.status.code(), Some(3));
     let e = String::from_utf8(out.stderr).unwrap();

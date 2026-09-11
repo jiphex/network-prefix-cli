@@ -2,15 +2,17 @@
 
 [![CI](https://github.com/jiphex/network-prefix-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/jiphex/network-prefix-cli/actions/workflows/ci.yml)
 
-Two CLIs for the two calculations that precede a build.
+This repository holds two CLIs, one for each of the two calculations that
+tend to precede a build.
 
-**`prefixtool`** inspects, splits and carves up IPv4 and IPv6 prefixes: how an
-allocation divides, what fits inside it, and what is left over afterwards.
+**`prefixtool`** inspects, splits and carves up IPv4 and IPv6 prefixes. It says
+how an allocation divides, what fits inside it, and what is left over
+afterwards.
 
-**`fabrictool`** sizes the cabling between switches: the cables, transceivers
-and ports a mesh of eight costs, the difference a 400G port split into four
-100G lanes makes to that, and the oversubscription the result runs at once the
-servers are connected.
+**`fabrictool`** sizes the cabling between switches. It counts the cables,
+transceivers and ports a mesh of eight costs, shows the difference a 400G port
+split into four 100G lanes makes to that, and works out the oversubscription
+the result runs at once the servers are connected.
 
 The two ship together in one archive and read the same way: a thing to work
 on, then operators for the questions about it.
@@ -722,8 +724,8 @@ Cabling 8 switches at 100G
    16  400G switch port                 2 ports on each of 8 switches
 ```
 
-The same twenty-eight links, but sixteen transceivers instead of fifty-six,
-and two ports a switch instead of seven. The arrangement line is the part
+That is the same twenty-eight links, but it takes sixteen transceivers
+instead of fifty-six, and two ports a switch instead of seven. The arrangement line is the part
 worth agreeing with before trusting the rest: in a mesh every switch has the
 same ports, so **both** ends of a link are lanes and they meet in a patch
 field. The eight spare lanes are the price of seven peers not dividing by
@@ -829,7 +831,8 @@ separately. The hub is the one that runs out.
 
 ### Leaf-spine, servers, and oversubscription
 
-The shape most of this gets built in. `+2` puts two spines above the leaves -
+This is the shape most of it gets built in. `+2` puts two spines above the
+leaves -
 saying how many spines there are is what makes it a leaf-spine, and a pair is
 what `--shape=leaf-spine` means on its own, because that is how a rack gets
 built. `-48@25G` says what is connected to each leaf:
@@ -1066,9 +1069,10 @@ fabrictool: a full mesh has no leaves: it has 8 switches
 1
 ```
 
-**One 100G link per spine port.** The simplest cabling: a 100G transceiver at
-each end and a fibre between them, no breakout and no patch field. It costs
-spine ports - eight of each spine's 32, one per leaf - and 64 transceivers:
+**The first option puts one 100G link in each spine port.** It is the simplest
+cabling, with a 100G transceiver at each end and a fibre between them, no
+breakout and no patch field. It costs spine ports - eight of each spine's 32,
+one per leaf - and 64 transceivers:
 
 ```
 $ fabrictool 8 +4 @100G -48@25G =32@400G =4@100G =2@200G =48@25G
@@ -1122,8 +1126,8 @@ Oversubscription
   each leaf  48 of 48 ports at 25G, 0 spare
 ```
 
-**Split each spine port into 4x100G.** The same 32 links, out of two spine
-ports per spine instead of eight. With optics that is a 400G transceiver and a
+**The second option splits each spine port into 4x100G.** That is the same 32
+links, out of two spine ports per spine instead of eight. With optics that is a 400G transceiver and a
 breakout harness per spine port, plus a 100G transceiver at each leaf:
 
 ```
@@ -1180,9 +1184,9 @@ Oversubscription
   each leaf  48 of 48 ports at 25G, 0 spare
 ```
 
-**The same, as AOCs.** A 400G-to-4x100G active optical splitter arrives as one
-assembly with its ends attached, so the whole spine side is eight cables and
-no transceivers at all:
+**The third option is the same split, bought as AOCs.** A 400G-to-4x100G
+active optical splitter arrives as one assembly with its ends attached, so the
+whole spine side comes to eight cables and no transceivers at all:
 
 ```
 $ fabrictool 8 +4 @100G %400G -48@25G --media=aoc
@@ -1221,7 +1225,8 @@ Oversubscription
   Servers        384 x 25G  (9.6T attached in total)
 ```
 
-**2x200G instead.** A 400G port splits two ways as readily as four, and 200G
+**The fourth option splits into 2x200G instead.** A 400G port splits two ways
+as readily as four, and 200G
 links would double the fabric each leaf has - but the mesh has to reach four
 spines, and a leaf with two 200G ports can only reach two of them:
 
@@ -1407,9 +1412,9 @@ graph fabric {
 
 Switches of different jobs are drawn as separate ranks, each node labelled
 with what that switch gives up - its fabric ports, the lanes inside them, and
-the servers under it. One edge per pair of switches, labelled with what runs
-between them, because the shape rather than the individual cables is the point
-of a picture.
+the servers under it. It draws one edge per pair of switches, labelled with
+what runs between them, because a picture is about the shape rather than about
+the individual cables.
 
 Adding `--schedule` draws a cable at a time instead, each edge labelled with
 the ports at its two ends, which is the same list `--schedule` prints and

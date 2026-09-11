@@ -1,5 +1,5 @@
-//! Output formatting: a human-readable report, a machine-readable one, and a
-//! bare list for piping into other tools.
+//! This module formats the report three ways: for a person to read, for a
+//! machine to parse, and as a bare list for piping into other tools.
 //!
 //! The layout follows the prefix side of this repository on purpose - a
 //! two-space indent, a padded label, a section heading with a blank line
@@ -230,7 +230,7 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
     Ok(())
 }
 
-/// The left-hand half of the opening line: what was asked about. A
+/// The left-hand half of the opening line, naming what was asked about. A
 /// leaf-spine is two populations and says so, because its switch count is not
 /// the number anybody typed.
 fn subject(p: &Plan) -> String {
@@ -244,7 +244,7 @@ fn subject(p: &Plan) -> String {
     }
 }
 
-/// The right-hand half of the opening line: what shape, at what speed.
+/// The right-hand half of the opening line, giving the shape and the speed.
 fn headline(p: &Plan) -> String {
     match p.speed {
         Some(s) => format!("{} at {s}", p.topology),
@@ -433,8 +433,9 @@ fn oversubscription(w: &mut impl Write, p: &Plan, o: &Opts) -> io::Result<()> {
     Ok(())
 }
 
-/// The ratio itself: how many times more is attached than can leave, written
-/// the way it is said - the bigger side first, and always against one.
+/// The ratio itself, as how many times more is attached than can leave. It is
+/// written the way it is said, with the bigger side first and always against
+/// one.
 fn verdict(ratio: &Ratio) -> String {
     if ratio.blocking() {
         return format!("{}:1", scaled(ratio.down, ratio.up));
@@ -1019,10 +1020,10 @@ mod tests {
         out
     }
 
-    /// The layout invariant: stripping the escapes from a coloured report
-    /// gives back the uncoloured one byte for byte. A value styled before it
-    /// was padded silently shifts every column after it, and looks fine in a
-    /// plain-text test.
+    /// The layout invariant is that stripping the escapes from a coloured
+    /// report gives back the uncoloured one byte for byte. A value styled
+    /// before it was padded silently shifts every column after it, and looks
+    /// fine in a plain-text test.
     #[test]
     fn colour_never_changes_the_layout() {
         for (switches, args) in [
@@ -1136,7 +1137,8 @@ mod tests {
             s,
             "sw1:1 sw2:1\nsw1:2 sw3:1\nsw1:3 sw4:1\nsw2:2 sw3:2\nsw2:3 sw4:2\nsw3:3 sw4:3\n"
         );
-        // No prose, no padding, no colour: it is somebody's input.
+        // It carries no prose, no padding and no colour, because it is
+        // somebody's input.
         assert!(!s.contains("->"));
     }
 
@@ -1314,7 +1316,8 @@ mod tests {
         ] {
             assert!(s.contains(want), "{want} missing from {s}");
         }
-        // Never coloured and never grouped: it is parsed, not read.
+        // It is never coloured and never grouped, because it is parsed
+        // rather than read.
         assert!(!s.contains('\x1b') && !s.contains("2,800"));
     }
 

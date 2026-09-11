@@ -485,7 +485,7 @@ fn quiet_makes_a_lookup_a_predicate() {
         Some(4)
     );
 
-    // Several lookups: any one outside is a fail.
+    // With several lookups, any one outside is a fail.
     assert_eq!(
         run(&["10.0.0.0/8", "=10.0.0.1", "=10.9.9.9", "-q"])
             .status

@@ -1,7 +1,7 @@
 # Working on prefixtool and fabrictool
 
-Two CLIs out of one package: `prefixtool` inspects, splits and carves IPv4 and
-IPv6 prefixes, and `fabrictool` sizes the cabling between switches. The README
+This package builds two CLIs. `prefixtool` inspects, splits and carves IPv4
+and IPv6 prefixes, and `fabrictool` sizes the cabling between switches. The README
 covers what they do; this covers how to change them without breaking things
 that are easy to break here.
 
@@ -96,13 +96,13 @@ integers. `num::describe_sum` is for people, `num::sum_grouped` for machines.
 Indexes stay exact everywhere: an approximated index is a wrong answer rather
 than a rounded one.
 
-**`--quiet` and `--json` are for parsing.** Never coloured, whatever `--color`
-says. No truncation hints, no prose. `list` returns whether more was waiting so
+**`--quiet` and `--json` are for parsing.** They are never coloured, whatever
+`--color` says, and they carry no truncation hints and no prose. `list` returns whether more was waiting so
 that the human renderer can say so and the machine ones can ignore it.
 
-One prefix per line, with one exception: a `%a:b:c` ratio prints one line per
-share, space-separated, because a share can be several blocks and nothing
-about the blocks says how many. Those lines ignore `-n` - truncating one is a
+They print one prefix per line, with one exception. A `%a:b:c` ratio prints
+one line per share, space-separated, because a share can be several blocks and
+nothing about the blocks says how many. Those lines ignore `-n` - truncating one is a
 wrong answer rather than a short one.
 
 fabrictool's `--quiet` is a bill of materials, `quantity<TAB>item`, or the
@@ -343,6 +343,21 @@ agent may not have permission to push tags anyway. A merge that does not change
 the version is ignored, so Dependabot's manifest updates are safe.
 
 Versions below `1.0.0`, and any with a suffix, publish as pre-releases.
+
+## Prose
+
+**Every sentence has a subject and a verb.** Do not write "Deliberately not
+counted: the cabling to the servers", or "One thing to flag:", or "Same
+twenty-eight links, but sixteen transceivers"; write "The bill of materials
+stops at the leaf" instead. A colon belongs after a complete clause and not
+after a fragment, and dropping the subject for emphasis reads as a tic rather
+than as economy.
+
+That rule covers prose: the README, this file, help text, and any comment
+that explains something. It does not cover labels, which are allowed to be
+noun phrases because that is what they are: the summary line of a doc comment
+(`/// The shape of the fabric`), a `clap` flag description, a field value in
+the report, a column heading, a table cell.
 
 ## Documentation
 

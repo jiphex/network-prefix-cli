@@ -99,17 +99,18 @@ impl Style {
         self.wrap("36", text)
     }
 
-    /// Something worked: an allocation was granted.
+    /// Something worked, such as an allocation being granted.
     pub fn good(&self, text: &str) -> String {
         self.wrap("32", text)
     }
 
-    /// Something to look at twice: documentation space, reserved ranges.
+    /// Something to look at twice, such as documentation space or a reserved
+    /// range.
     pub fn warn(&self, text: &str) -> String {
         self.wrap("33", text)
     }
 
-    /// Something failed: a request that could not be satisfied.
+    /// Something failed, such as a request that could not be satisfied.
     pub fn bad(&self, text: &str) -> String {
         self.wrap("31", text)
     }

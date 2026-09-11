@@ -149,7 +149,7 @@ impl Side {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
     pub quantity: u64,
-    /// A stable name for machines: this is what `--quiet` prints.
+    /// The name machines use, which is what `--quiet` prints.
     pub key: String,
     /// The same thing for people.
     pub label: String,
@@ -157,7 +157,8 @@ pub struct Item {
     pub note: String,
 }
 
-/// The answer to `=N`: whether the plan fits a switch with that many ports.
+/// The answer to `=N`, saying whether the plan fits a switch with that many
+/// ports.
 ///
 /// A bare `=N` is about the whole front panel. `=N@SPEED` is about the ports
 /// at one speed, which is how a real switch is specified - 48 at 25G, four at
@@ -490,7 +491,7 @@ impl Shape {
         }
     }
 
-    /// Which switches have servers hanging off them. The fabric's edge: a
+    /// Which switches have servers hanging off them. The fabric's edge is a
     /// leaf, a spoke, or every switch in a shape that has no edge.
     fn edge(&self) -> Role {
         match self.topology {
@@ -955,8 +956,9 @@ mod tests {
             .collect()
     }
 
-    /// The tests say the shape the way the command line used to, because it
-    /// reads better in a list of cases than a separate argument does.
+    /// The tests write the shape inline, as `/star`, because a list of cases
+    /// reads better that way than one with a separate argument threaded
+    /// through it.
     fn options<'a>(args: &[&'a str], media: Media) -> (Vec<&'a str>, Options) {
         let mut opts = Options {
             media,
@@ -979,8 +981,7 @@ mod tests {
         (rest, opts)
     }
 
-    /// `build` as the tests want it: the shape written inline as `/star`,
-    /// which is where it used to live on the command line.
+    /// `build` as the tests want it, with the shape written inline.
     fn built(switches: u64, args: &[&str], media: Media) -> Result<Report, Problem> {
         let (rest, opts) = options(args, media);
         build(switches, &ops(&rest), opts)

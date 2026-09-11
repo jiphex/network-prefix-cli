@@ -20,8 +20,8 @@ fn step(net: &IpNet) -> u8 {
     if net.addr().is_ipv4() { 8 } else { 4 }
 }
 
-/// The delegation boundary at or below a prefix: the shortest zone length that
-/// still splits the prefix into whole zones.
+/// The delegation boundary at or below a prefix, which is the shortest zone
+/// length that still splits the prefix into whole zones.
 pub fn natural_boundary(net: &IpNet) -> u8 {
     let step = step(net);
     net.prefix_len().div_ceil(step) * step
@@ -35,8 +35,8 @@ pub enum Zones {
         /// True when the prefix was already a zone in its own right.
         whole: bool,
     },
-    /// RFC 2317: an IPv4 prefix longer than a /24, delegated out of the /24
-    /// above it by CNAME.
+    /// An IPv4 prefix longer than a /24, delegated out of the /24 above it by
+    /// CNAME, as RFC 2317 describes.
     Classless {
         parent: String,
         zone: String,
@@ -124,9 +124,9 @@ pub fn names(net: IpNet, boundary: u8) -> impl Iterator<Item = String> {
 
 /// The zone name for a prefix that sits on a label boundary.
 ///
-/// Absolute, with the trailing dot: these names go into zone files, `dig` and
-/// `nsupdate`, where a relative one is a different name that picks up whatever
-/// origin is in scope.
+/// It is absolute, with the trailing dot, because these names go into zone
+/// files, `dig` and `nsupdate`, where a relative one is a different name that
+/// picks up whatever origin is in scope.
 pub fn name(net: &IpNet) -> Option<String> {
     let mut labels: Vec<String> = match net.network() {
         IpAddr::V4(a) => {

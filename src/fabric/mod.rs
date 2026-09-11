@@ -56,8 +56,8 @@ impl Topology {
         }
     }
 
-    /// The parenthesised half of the topology line: what the shape means,
-    /// rather than what it is called.
+    /// The parenthesised half of the topology line, which says what the shape
+    /// means rather than what it is called.
     pub fn describe(&self) -> &'static str {
         match self {
             Topology::Mesh => "every switch to every other",
@@ -122,7 +122,7 @@ impl Role {
         self.singular()
     }
 
-    /// A role as somebody writes it when naming one: singular or plural, and
+    /// A role as somebody writes it when naming one, singular or plural, with
     /// `switch` for the shapes where every switch is the same.
     pub fn parse(s: &str) -> Option<Role> {
         match s.to_ascii_lowercase().as_str() {
@@ -152,9 +152,9 @@ pub enum Media {
     /// is the only one of the three that reaches across a room.
     #[default]
     Optic,
-    /// Active optical cable: fibre with the ends moulded on.
+    /// Active optical cable, which is fibre with the ends moulded on.
     Aoc,
-    /// Direct attach copper: a passive twinax lead with the ends moulded on.
+    /// Direct attach copper, a passive twinax lead with the ends moulded on.
     Dac,
 }
 

@@ -48,7 +48,7 @@ impl Speed {
         self.mbps.checked_mul(n).map(Speed::from_mbps)
     }
 
-    /// An aggregate rate: this speed carried over `n` links.
+    /// An aggregate rate, meaning this speed carried over `n` links.
     pub fn total(&self, n: u64) -> Total {
         Total(self.mbps.saturating_mul(n))
     }

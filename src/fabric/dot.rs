@@ -1,15 +1,16 @@
-//! A Graphviz DOT drawing of the fabric, for looking at rather than reading.
+//! This module draws the fabric as a Graphviz graph, for looking at rather
+//! than reading.
 //!
 //! The report says what a fabric costs and the schedule says where each cable
 //! goes; neither shows the shape. `dot -Tpng` does, and a graph is the one
 //! form in which a mesh of sixteen and a leaf-spine of sixteen are obviously
 //! not the same thing.
 //!
-//! One edge per pair of switches by default, labelled with what runs between
-//! them, because a diagram of a fabric is about the shape rather than about
-//! individual cables. With `--schedule` it draws a cable at a time instead,
-//! labelled with the ports each end occupies, which is the same list the
-//! schedule prints and easier to check against a rack.
+//! It draws one edge per pair of switches by default, labelled with what runs
+//! between them, because a diagram of a fabric is about the shape rather than
+//! about individual cables. With `--schedule` it draws a cable at a time
+//! instead, labelled with the ports each end occupies, which is the same list
+//! the schedule prints and easier to check against a rack.
 
 use super::Topology;
 use super::plan::{Report, Role, Side};
@@ -199,7 +200,7 @@ mod tests {
         assert!(s.contains("  sw1 -- sw2 [label=\"100G\"];"), "{s}");
         assert!(s.contains("  sw2 -- sw3 [label=\"100G\"];"), "{s}");
         assert!(s.trim_end().ends_with('}'), "{s}");
-        // One edge per pair, not one per switch.
+        // There is one edge per pair, not one per switch.
         assert_eq!(s.matches(" -- ").count(), 3);
         // Nothing to cluster when every switch is the same.
         assert!(!s.contains("subgraph"), "{s}");
@@ -220,7 +221,8 @@ mod tests {
             s.contains("leaf1 [label=\"leaf1\\n2 x 100G\\n48 x 25G servers\"]"),
             "{s}"
         );
-        // Every leaf on every spine: eight edges, none between leaves.
+        // Every leaf reaches every spine, which is eight edges, and no leaf
+        // reaches another.
         assert_eq!(s.matches(" -- ").count(), 8);
         assert!(!s.contains("leaf1 -- leaf2"), "{s}");
     }

@@ -11,8 +11,8 @@ use super::Topology;
 use super::plan::{Arrangement, Plan};
 use std::fmt;
 
-/// One end of a link: a switch, a port on it, and a lane in that port when
-/// the port is broken out.
+/// One end of a link, which is a switch, a port on it, and a lane in that
+/// port when the port is broken out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct End {
     /// Where the switch sits in the plan's own order, 1-based. Spines come
@@ -171,7 +171,8 @@ pub fn pairs(plan: &Plan) -> impl Iterator<Item = (u64, u64)> {
     Links::new(plan).step_by(plan.per_pair as usize)
 }
 
-/// The patch schedule: every link, with the port each end connects to.
+/// The patch schedule, listing every link with the port each end connects
+/// to.
 pub struct Schedule {
     links: Links,
     topology: Topology,
@@ -186,7 +187,8 @@ pub struct Schedule {
 
 impl Schedule {
     pub fn new(plan: &Plan) -> Schedule {
-        // Which switches break a port out: all of them, or the upstream ones.
+        // A port is broken out on every switch, or only on the upstream
+        // ones.
         let upstream = match plan.topology {
             Topology::LeafSpine => plan.spines,
             Topology::Star => 1,

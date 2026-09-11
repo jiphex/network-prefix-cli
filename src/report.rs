@@ -301,9 +301,10 @@ pub fn build(input: &str, net: IpNet, ops: &[Op], direction: Direction) -> Resul
                         carve::family(&net)
                     ));
                 }
-                // Collected rather than aggregated one at a time: several
-                // `+` operators describe one aggregate covering all of them,
-                // not a series of pairings with the prefix under inspection.
+                // They are collected rather than aggregated one at a time,
+                // because several `+` operators describe one aggregate
+                // covering all of them, not a series of pairings with the
+                // prefix under inspection.
                 aggregate_with.push(other.trunc());
             }
             Op::Step(n) => neighbours.push(Neighbour {
@@ -575,8 +576,8 @@ fn share(blocks: &[IpNet], wanted: &[u64]) -> Result<Shared, String> {
         units *= 2;
     }
 
-    // Largest remainder: floor everyone first, then hand the leftover units
-    // to whoever was rounded down hardest. Ties go to the earlier share, so
+    // This is the largest-remainder method, which floors everyone first and
+    // then hands the leftover units to whoever was rounded down hardest. Ties go to the earlier share, so
     // the result depends only on the ratio and not on the sort.
     let mut got: Vec<u128> = wanted
         .iter()
@@ -751,8 +752,8 @@ fn step(net: IpNet, n: i64) -> Result<IpNet, String> {
     };
     let start = to_u128(net.network());
 
-    // Done unsigned in both directions: n * block can be 2^127, which does
-    // not fit in an i128.
+    // It is done unsigned in both directions, because n * block can be 2^127,
+    // which does not fit in an i128.
     let offset = (n.unsigned_abs() as u128)
         .checked_mul(block)
         .ok_or_else(|| out_of_range(net, n))?;
@@ -1253,7 +1254,8 @@ mod tests {
             ("10.0.0.0/16", vec!["%5:3"]),
             ("2001:db8::/48", vec!["%2:1:1"]),
             ("2001:db8::/48", vec!["%9:5:3:1"]),
-            // ... and over a ragged remainder, not just a whole prefix.
+            // The last three run over a ragged remainder rather than a
+            // whole prefix.
             ("10.0.0.0/16", vec!["-10.0.8.0/22", "%2:1:1"]),
             ("10.0.0.0/16", vec!["-24x3", "%3:1"]),
         ] {
@@ -1315,8 +1317,8 @@ mod tests {
         // `%1:1:1` is the ratio spelling of `%3`, so the two must divide the
         // space into the same blocks - which is also what pins the rounding
         // rule to the one `%M` already uses.
-        // From two: a lone `%1` has no colon, so it is a count and not a
-        // ratio at all.
+        // It starts from two because a lone `%1` has no colon, so it is a
+        // count and not a ratio at all.
         for m in 2..=12usize {
             let ratio = format!("%{}", vec!["1"; m].join(":"));
             let shares = report("10.0.0.0/20", &[&ratio]);

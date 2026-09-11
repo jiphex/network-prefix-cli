@@ -1,5 +1,6 @@
-//! Output formatting: a human-readable report, a machine-readable one, and a
-//! bare list of prefixes for piping into other tools.
+//! This module formats the report three ways: for a person to read, for a
+//! machine to parse, and as a bare list of prefixes for piping into other
+//! tools.
 
 use crate::carve::{Direction, Outcome, Plan};
 use crate::info::{Info, Reverse};
@@ -91,8 +92,8 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                     .map(|c| format!("{} x /{len}", c.short()))
             })
             .collect();
-        // Joined with "or": these are alternative ways to divide the same
-        // space, not things that fit alongside each other.
+        // They are joined with "or" because they are alternative ways to
+        // divide the same space, not things that fit alongside each other.
         field(w, o, "Holds", &parts.join(&o.style.dim(" or ")))?;
     }
 
