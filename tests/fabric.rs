@@ -381,10 +381,10 @@ fn a_fabric_that_cannot_be_built_is_not_the_same_as_bad_input() {
 fn errors_say_what_to_do_about_it() {
     assert!(stderr(&["8", "%400G"]).contains("@100G"));
     assert!(stderr(&["1"]).contains("not a fabric"));
-    // The two that became flags say where they went, whatever follows them.
+    // A sigil that is really a flag is answered with the flag.
     assert!(stderr(&["8", "/banana"]).contains("--shape=mesh, ring"));
-    assert!(stderr(&["8", "/ring"]).contains("the shape is a flag now"));
-    assert!(stderr(&["8", "."]).contains("--schedule"));
+    assert!(stderr(&["8", "/ring"]).contains("the shape is a flag"));
+    assert!(stderr(&["8", "."]).contains("the patch schedule is --schedule"));
     // On stderr, prefixed, so it never lands in a pipeline's data - and a
     // run that worked says nothing there at all.
     assert!(stderr(&["1"]).starts_with("fabrictool:"));

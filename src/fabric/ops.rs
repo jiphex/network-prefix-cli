@@ -93,13 +93,13 @@ pub fn parse(token: &str) -> Result<Op, String> {
         '+' => Ok(Op::Spines(spines(payload)?)),
         '-' => Ok(Op::Access(access(payload)?)),
         '=' => Ok(Op::Budget(budget(payload)?)),
-        // The two that became flags are worth naming rather than calling
-        // unknown: they were operators, and somebody will still type them.
+        // A sigil somebody reaches for that turns out to be a flag: say
+        // which flag rather than listing the operators it is not.
         '/' => Err(format!(
-            "'{token}' is not an operator: the shape is a flag now, one of \
+            "'{token}' is not an operator: the shape is a flag, \
              --shape=mesh, ring, star or leaf-spine"
         )),
-        '.' => Err("the patch schedule is a flag now: --schedule rather than '.'".into()),
+        '.' => Err("'.' is not an operator: the patch schedule is --schedule".into()),
         _ => Err(format!(
             "unknown operator '{token}': expected @SPEED, %M, xK, +S, -N@SPEED or =N"
         )),
@@ -194,9 +194,9 @@ fn budget(payload: &str) -> Result<Budget, String> {
 /// `x2` is the one that does not start with a sigil, and the digit after it
 /// is what keeps it apart from a word that happens to begin with an x.
 pub fn looks_like_op(token: &str) -> bool {
-    // `/` and `.` are not operators any more, but a token starting with
-    // either is still one somebody meant, and parse() has a better answer for
-    // it than clap does.
+    // `/` and `.` are not operators, but they are what a hand reaches for
+    // when the thing wanted is a flag, and parse() points at the right flag
+    // where clap would only say the argument was unexpected.
     if token.starts_with(['@', '%', '=', '+', '/']) || token == "." {
         return true;
     }
@@ -327,11 +327,10 @@ mod tests {
         }
     }
 
-    /// The shape and the schedule were operators before they were flags, so
-    /// the old spelling says where they went rather than that it was never
-    /// an operator at all.
+    /// A sigil that turns out to be a flag is answered with the flag, since
+    /// listing the operators it is not would be no help at all.
     #[test]
-    fn the_operators_that_became_flags_say_so() {
+    fn a_sigil_that_is_really_a_flag_says_which_flag() {
         assert!(parse("/ring").unwrap_err().contains("--shape=mesh, ring"));
         assert!(parse(".").unwrap_err().contains("--schedule"));
         assert!(looks_like_op("/ring") && looks_like_op("."));

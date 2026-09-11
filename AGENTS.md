@@ -276,10 +276,13 @@ prefix side does it: a digit has to follow the `-`.
 `x2`, `+2`, `-48@25G` and `=32@400G` all carry a figure that could be any of a
 million; the shape of the fabric and what its links are made of are each one
 of four, so they are `--shape` and `--media`. That line is what keeps the
-grammar explicable, and it is why `/mesh` and `.` stopped being operators -
-both are choices rather than quantities. Typing either still reaches
-`ops::parse`, which says where it went instead of leaving clap to call it an
-unexpected argument; `looks_like_op` keeps them for exactly that reason.
+grammar explicable, and a new one belongs on whichever side of it the thing
+being said falls.
+
+`looks_like_op` still claims a leading `/` and a bare `.`, which are what a
+hand reaches for when the thing wanted is one of those flags: they reach
+`ops::parse`, which names the flag, where clap would only say the argument was
+unexpected.
 
 `+S` carries the shape as well as a number. Saying how many spines there are
 is what makes a fabric a leaf-spine, because there is no other shape the

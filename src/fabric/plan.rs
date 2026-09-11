@@ -1487,8 +1487,8 @@ mod tests {
 
     #[test]
     fn a_scalar_given_twice_is_an_error_rather_than_a_race() {
-        // The shape is not in this list: it is a flag now, and a flag given
-        // twice is clap's business rather than ours.
+        // The shape is not in this list: it is a flag, and a flag given twice
+        // is clap's business rather than ours.
         for args in [
             vec!["@100G", "@400G"],
             vec!["%4", "%8"],

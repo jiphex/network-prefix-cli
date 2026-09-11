@@ -315,11 +315,11 @@ mod tests {
         assert!(cli.ops.is_empty());
     }
 
-    /// The shape and the schedule were operators until they were flags, and
-    /// the old spelling still reaches the operator parser, which says where
-    /// they went rather than letting clap call it an unexpected argument.
+    /// A sigil that is really a flag reaches the operator parser, which
+    /// names the flag, rather than clap, which would only say the argument
+    /// was unexpected.
     #[test]
-    fn the_old_operator_spellings_still_reach_a_useful_error() {
+    fn a_sigil_that_is_really_a_flag_reaches_a_useful_error() {
         let cli = parse(&["fabrictool", "8", "/ring", "."]);
         assert_eq!(cli.ops, vec!["/ring", "."]);
     }
