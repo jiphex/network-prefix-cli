@@ -720,7 +720,7 @@ fn a_count_over_a_remainder_prints_each_part_once() {
 
 #[test]
 fn a_ratio_that_cannot_be_cut_exactly_says_what_it_gave_instead() {
-    // Two thirds of a prefix is not a prefix, so 2:1 lands on 3:1 - the same
+    // Two thirds of a prefix is not a prefix, so 2:1 becomes 3:1 - the same
     // bargain %3 makes when it hands out 2:1:1 for three equal parties.
     let s = stdout(&["10.0.0.0/24", "%2:1"]);
     assert!(s.contains("3:1  for a request of 2:1"));

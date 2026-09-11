@@ -43,7 +43,7 @@ OPERATORS:
   given; under --quiet any one of them not fitting is the exit status.
 
   Server ports are the other half of an oversubscription ratio: what is
-  attached to a switch against what leaves it. They land on whichever
+  attached to a switch against what leaves it. They sit on whichever
   switches are the fabric's edge - the leaves of a leaf-spine, the spokes of
   a star, every switch of a mesh or a ring - and they count against a port
   budget alongside the fabric's own ports, because they come out of the same

@@ -281,7 +281,7 @@ one, and the ratio already says how many lines to expect.
 
 A ratio is exactly cuttable when its parts, reduced by their common factor, add
 up to a power of two. `2:1:1` is, and so is `3:1` and `6:2`. `2:1` is not -
-two thirds of a prefix is not a prefix - so it lands on the nearest aligned
+two thirds of a prefix is not a prefix - so it falls to the nearest aligned
 split and the report says which one that is rather than pretending:
 
 ```
@@ -329,7 +329,7 @@ Map of 2001:db8::/52
 ```
 
 The map underneath shows the parent laid out block by block, with the
-allocations marked in place, so you can see where a carve landed rather than
+allocations marked in place, so you can see where each carve sits rather than
 cross-referencing two lists by address:
 
 ```
@@ -1238,7 +1238,7 @@ What the numbers come to, for the three that do fit:
 | 400G split 4x100G, optics | 2 of 32 | 8 x 400G | 32 x 100G | 8 harnesses | 4x100G, 3:1 |
 | 400G split 4x100G, AOC | 2 of 32 | none | none | 8 AOC splitters | 4x100G, 3:1 |
 
-All three keep the full mesh and land on the same 3:1 oversubscription,
+All three keep the full mesh and come to the same 3:1 oversubscription,
 because that is set by the leaf - 48x25G attached against 4x100G of uplink -
 and not by how the uplinks are cabled. What differs is spine ports and parts:
 the breakout options free six ports on every spine, and the AOC option removes
@@ -1431,8 +1431,8 @@ Releases are cut by merging a pull request, not by pushing a tag by hand:
 
 1. Bump `version` in `Cargo.toml` on a branch and open a PR.
 2. Get it approved and merge it.
-3. Landing on the default branch creates the matching `v<version>` tag and runs
-   the release, which builds all six targets and publishes them.
+3. Merging to the default branch creates the matching `v<version>` tag and
+   runs the release, which builds all six targets and publishes them.
 
 Approving the PR is the act that publishes, so nothing reaches the releases
 page without a review. A merge that does not change the version is ignored

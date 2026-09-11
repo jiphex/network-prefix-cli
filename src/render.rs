@@ -326,7 +326,7 @@ fn shares_section(w: &mut impl Write, info: &Info, sh: &Shares, o: &Opts) -> io:
                 "Note",
                 "the nearest the space allows - it is no longer one block, so",
             )?;
-            field(w, o, "", "the shares land on the pieces it is already in")?;
+            field(w, o, "", "the shares follow the pieces it is already in")?;
         } else {
             field(
                 w,

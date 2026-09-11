@@ -610,7 +610,7 @@ fn budget(w: &mut impl Write, p: &Plan, b: &Budget, o: &Opts) -> io::Result<()> 
         .unwrap_or(0);
     for s in &b.sides {
         let used = match (s.port_speed, s.servers) {
-            // Where the fabric and the servers both land on ports of this
+            // Where the fabric and the servers both use ports of this
             // speed, the total alone hides which is which.
             (Some(sp), Some((servers, at))) if s.fabric > 0 && at == sp && b.speed.is_some() => {
                 format!(

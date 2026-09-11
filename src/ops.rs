@@ -215,7 +215,7 @@ fn exclude(input: &'_ str) -> R<'_, Op> {
 }
 
 /// Names go in a report and in JSON, so they are kept to something that needs
-/// no quoting or escaping anywhere it lands.
+/// no quoting or escaping wherever it is typed.
 fn check_label(s: &str) -> Result<String, String> {
     if s.is_empty() {
         return Err("a name after ':' cannot be empty".into());

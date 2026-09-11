@@ -13,7 +13,7 @@ OPERATORS:
   -N            carve one /N out of the prefix
   -N*K, -NxK    carve K subnets of /N (use the x form to keep zsh happy)
   -<prefix>     reserve one specific subnet, wherever it sits
-  -N:name       any carve may be named; the name lands in the table and map
+  -N:name       any carve may be named; the name shows in the table and map
   +N            show the enclosing /N supernet
   +<prefix>     aggregate; several of these make one aggregate, not a pair each
   =<addr|net>   ask whether an address or prefix falls inside
@@ -55,7 +55,7 @@ EXAMPLES:
         take infrastructure down from the top, named, so the map reads as a plan
 
   prefixtool 2001:db8::/52 /64 =2001:db8:0:3::5
-        which /64 does that address land in
+        which /64 holds that address
 
   prefixtool 2001:db8::/52 /64 @3
         the other direction: which /64 is number 3

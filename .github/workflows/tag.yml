@@ -1,7 +1,7 @@
 # Cut a release by merging a pull request.
 #
 # Bump `version` in Cargo.toml on a branch, open a PR, get it approved and
-# merge it. When that lands on the default branch this creates the matching
+# merge it. When that merges to the default branch this creates the matching
 # v<version> tag and runs the release, so approving the PR is the act that
 # publishes. Nothing happens for a merge that does not change the version, and
 # nothing happens if the tag already exists, so re-running is harmless.

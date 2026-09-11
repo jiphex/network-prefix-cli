@@ -111,7 +111,7 @@ pub struct Row {
 
 impl Plan {
     /// Every block of the parent in address order, marked with whether it was
-    /// carved out - a picture of where the allocations landed rather than two
+    /// carved out - a picture of where the allocations sit rather than two
     /// separate lists to cross-reference by eye.
     ///
     /// The allocations and the free blocks tile the parent exactly between
@@ -247,7 +247,7 @@ fn take(free: &mut Vec<IpNet>, parent: IpNet, len: u8, direction: Direction) -> 
         return Outcome::Exhausted;
     };
     // Splitting down towards the request takes the half nearest the end being
-    // filled from, so the allocation lands at that end of the block rather
+    // filled from, so the allocation sits at that end of the block rather
     // than merely in the block nearest it.
     let mut cur = free.remove(i);
     while cur.prefix_len() < len {

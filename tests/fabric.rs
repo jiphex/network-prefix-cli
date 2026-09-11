@@ -385,7 +385,7 @@ fn errors_say_what_to_do_about_it() {
     assert!(stderr(&["8", "/banana"]).contains("--shape=mesh, ring"));
     assert!(stderr(&["8", "/ring"]).contains("the shape is a flag"));
     assert!(stderr(&["8", "."]).contains("the patch schedule is --schedule"));
-    // On stderr, prefixed, so it never lands in a pipeline's data - and a
+    // On stderr, prefixed, so it never reaches a pipeline's data - and a
     // run that worked says nothing there at all.
     assert!(stderr(&["1"]).starts_with("fabrictool:"));
     assert!(stderr(&["8"]).is_empty());

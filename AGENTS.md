@@ -140,7 +140,7 @@ found real bugs when first written:
 - Filling from either end gives **mirror images**: `--from=top` reflects each
   allocation about the middle of the parent. Both the block chosen and the
   half taken when splitting down to it have to flip, and a test that only
-  checked one of those passes while allocations land at the wrong end.
+  checked one of those passes while allocations sit at the wrong end.
 
 When adding an operator, reach for the property first.
 

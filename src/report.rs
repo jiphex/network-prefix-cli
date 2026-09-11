@@ -67,7 +67,7 @@ pub struct Supernet {
 pub struct Lookup {
     pub target: Target,
     pub inside: bool,
-    /// For each requested split length, the subnet the target lands in and
+    /// For each requested split length, the subnet the target falls inside and
     /// its index within the split.
     pub positions: Vec<(u8, IpNet, u128)>,
 }
@@ -521,7 +521,7 @@ fn divide(blocks: &[IpNet], m: u64) -> Result<Vec<IpNet>, String> {
 ///
 /// A ratio is only exactly representable when its parts, reduced, sum to a
 /// power of two - `2:1:1` can be cut from a prefix but `2:1` cannot, because
-/// two thirds of a prefix is not a prefix. Anything else lands on the nearest
+/// two thirds of a prefix is not a prefix. Anything else falls to the nearest
 /// the units allow, which is the same bargain `%M` already makes.
 type Shared = (Vec<Vec<IpNet>>, Vec<u128>, bool);
 
