@@ -106,6 +106,16 @@ impl Role {
         }
     }
 
+    /// The same label, against the number of switches that hold the role, so
+    /// a fabric with one spoke says "the spoke" rather than "each spoke".
+    pub fn label_for(&self, switches: u64) -> String {
+        match (self, switches) {
+            (Role::Hub, _) => "the hub".to_string(),
+            (_, 1) => format!("the {}", self.singular()),
+            _ => self.label().to_string(),
+        }
+    }
+
     /// The role as a bare noun, for a label that supplies its own article:
     /// "Per leaf" rather than "Per each leaf".
     pub fn singular(&self) -> &'static str {

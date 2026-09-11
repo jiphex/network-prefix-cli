@@ -179,6 +179,9 @@ pub struct Budget {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BudgetSide {
     pub role: Role,
+    /// How many switches hold the role, so a row can say "the leaf" when
+    /// there is one of them.
+    pub switches: u64,
     /// Every port one such switch gives up, fabric and servers together -
     /// which is what has to fit, whatever the ports are facing.
     pub needed: u64,
@@ -280,11 +283,10 @@ pub struct Options {
 }
 
 pub fn build(switches: u64, ops: &[Op], opts: Options) -> Result<Report, Problem> {
-    if switches < 2 {
-        return Err(Problem::Input(format!(
-            "{switches} switch{} is not a fabric: there has to be something to connect it to",
-            if switches == 1 { "" } else { "es" }
-        )));
+    if switches == 0 {
+        return Err(Problem::Input(
+            "a fabric needs switches in it: give a count, such as 8".into(),
+        ));
     }
     if switches > MAX_SWITCHES {
         return Err(Problem::Input(format!(
@@ -334,6 +336,14 @@ pub fn build(switches: u64, ops: &[Op], opts: Options) -> Result<Report, Problem
         Topology::LeafSpine => spines.unwrap_or(2),
         _ => 0,
     };
+    // One leaf under a pair of spines is a fabric, so the count that has to
+    // reach two is the whole fabric's rather than the one that was typed.
+    if switches + spines < 2 {
+        return Err(Problem::Input(format!(
+            "{switches} switch is not a fabric on its own: there has to be something to \
+             connect it to"
+        )));
+    }
     if switches + spines > MAX_SWITCHES {
         return Err(Problem::Input(format!(
             "{switches} leaves and {spines} spines is past what this will plan \
@@ -481,12 +491,14 @@ impl Shape {
                 (Role::Spine, self.spines, degrees[0], splits),
                 (Role::Leaf, self.count, degrees[self.spines as usize], false),
             ],
-            Topology::Star if degrees[0] != degrees[1] => vec![
+            // A star's hub and its spokes are different jobs even in a star
+            // of two, where they happen to hold the same number of links.
+            // Collapsing them there loses the servers, which hang off spokes,
+            // and the answer to a question about the hub.
+            Topology::Star => vec![
                 (Role::Hub, 1, degrees[0], splits),
                 (Role::Spoke, self.count - 1, degrees[1], false),
             ],
-            // A star of two is a pair: its hub and its spoke hold the same
-            // thing, so there is nothing to tell apart.
             _ => vec![(Role::Every, self.count, degrees[0], splits)],
         }
     }
@@ -580,6 +592,11 @@ fn plan(
     if topology == Topology::Ring && shape.count == 2 {
         cautions.push(
             "a ring of two switches is a pair: there is one link between them, not two".into(),
+        );
+    }
+    if topology == Topology::Star && shape.count > 2 {
+        cautions.push(
+            "the hub is a single point of failure: every spoke is cut off when it goes".into(),
         );
     }
     if topology == Topology::LeafSpine && shape.spines == 1 {
@@ -918,6 +935,7 @@ fn budget(plan: &Plan, asked: ops::Budget) -> Result<Budget, Problem> {
             }
             Some(BudgetSide {
                 role: s.role,
+                switches: s.switches,
                 needed,
                 port_speed: asked.speed.or(s.port_speed),
                 fabric,
@@ -1295,6 +1313,53 @@ mod tests {
         assert_eq!(p.trunk_ports, 8);
         // A splitter is fine here: its lanes plug into whole leaf ports.
         assert!(built(16, &["+2", "@100G", "%400G"], Media::Dac).is_ok());
+    }
+
+    /// A star of two has a hub and a spoke that hold the same number of
+    /// links, and they are still different jobs. Treating them as one
+    /// population lost the servers, which hang off spokes, and the answer to
+    /// any question about the hub.
+    #[test]
+    fn a_star_of_two_still_has_a_hub_and_a_spoke() {
+        let p = plan_of(2, &["/star", "@100G", "-24@10G"]);
+        assert_eq!(p.sides.len(), 2);
+        assert_eq!((p.sides[0].role, p.sides[0].switches), (Role::Hub, 1));
+        assert_eq!((p.sides[1].role, p.sides[1].switches), (Role::Spoke, 1));
+        // The servers are on the spoke, and the ratio is about them.
+        assert!(p.sides[0].access.is_none());
+        let spoke = &p.sides[1];
+        assert_eq!(spoke.access.expect("servers").servers, 24);
+        assert_eq!(spoke.ratio(p.speed).expect("a ratio").down, 240_000);
+        // And a question about the hub is answerable.
+        assert!(built(2, &["/star", "@100G", "=32:hub"], Media::Optic).is_ok());
+    }
+
+    #[test]
+    fn a_single_leaf_under_spines_is_a_fabric() {
+        let p = plan_of(1, &["+2", "@100G"]);
+        assert_eq!((p.switches, p.spines, p.links), (3, 2, 2));
+        assert_eq!(p.leaves().expect("a leaf").switches, 1);
+        // One switch on its own is still not a fabric, and neither is none.
+        for (count, args) in [(1u64, vec!["@100G"]), (0, vec!["+2"])] {
+            let e = fails(count, &args, Media::Optic);
+            assert!(matches!(e, Problem::Input(_)), "{count} {args:?}: {e:?}");
+        }
+    }
+
+    #[test]
+    fn a_hub_is_flagged_the_way_a_lone_spine_is() {
+        let p = plan_of(8, &["/star", "@100G"]);
+        assert!(
+            p.cautions
+                .iter()
+                .any(|c| c.contains("single point of failure")),
+            "{:?}",
+            p.cautions
+        );
+        // A star of two is a pair, where the hub carries no risk a pair does
+        // not carry anyway.
+        assert!(plan_of(2, &["/star", "@100G"]).cautions.is_empty());
+        assert!(plan_of(8, &["@100G"]).cautions.is_empty());
     }
 
     #[test]

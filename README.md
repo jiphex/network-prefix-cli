@@ -630,8 +630,7 @@ tries to glob the `*`. Flags and operators can be given in any order.
 | `--shape <shape>` | `mesh` (default), `ring`, `star` or `leaf-spine` |
 | `--media <kind>` | What the links are made of: `optic` (default), `aoc` or `dac` |
 | `--schedule` | Print the patch schedule: which port on which switch reaches which |
-| `-n`, `--limit <N>` | Links to list in the patch schedule (default 8) |
-| `-a`, `--all` | List every link, however many there are |
+| `-n`, `--limit <N>` | Show only the first N links of the patch schedule |
 | `-q`, `--quiet` | Print the bill of materials only, one item per line |
 | `--json` | Emit a JSON object instead of a report |
 | `--dot` | Emit a Graphviz DOT graph of the fabric |
@@ -665,7 +664,6 @@ $ fabrictool 8 @100G
   Topology       full mesh  (every switch to every other)
   Links          28  (1 link between each pair)
   Link speed     100G
-  Per pair       100G
   Per switch     7 links, 700G
   Ports          7 x 100G on each switch
   Bisection      1.6T  (16 links across the middle)
@@ -704,7 +702,6 @@ $ fabrictool 8 @100G %400G
   Topology       full mesh  (every switch to every other)
   Links          28  (1 link between each pair)
   Link speed     100G
-  Per pair       100G
   Per switch     7 links, 700G
   Ports          2 x 400G on each switch  (4 lanes each: 7 used, 1 spare)
   Bisection      1.6T  (16 links across the middle)
@@ -714,7 +711,7 @@ $ fabrictool 8 @100G %400G
 
 Cabling 8 switches at 100G
   Arrangement    400G ports split 4 ways at both ends, lanes joined in a patch field
-  Trunk ports    16  (64 lanes, 56 used, 8 spare)
+  Trunk ports    16  (across 8 switches: 64 lanes, 56 used, 8 spare)
 
   Qty  Item                             Where
   ---  -------------------------------  -----------------------------------------------------------
@@ -745,7 +742,6 @@ $ fabrictool 48 --shape=star @25G %100G --media=dac
   Topology       star  (one hub, everything else connected to it)
   Links          47  (1 link from the hub to each spoke)
   Link speed     25G
-  Per spoke      25G
   Per switch     the hub 47 links, 1.175T
                  each spoke 1 link, 25G
   Ports          12 x 100G on the hub  (4 lanes each: 47 used, 1 spare)
@@ -754,6 +750,7 @@ $ fabrictool 48 --shape=star @25G %100G --media=dac
   Fabric total   1.175T  (47 x 25G, one direction)
   Hops           2  (spoke to hub to spoke)
   Resilience     any single link failure splits the fabric
+  Caution        the hub is a single point of failure: every spoke is cut off when it goes
 
 Cabling 48 switches at 25G
   Arrangement    the hub's 100G ports split 4 ways, a whole 25G port at each spoke
@@ -776,7 +773,7 @@ $ fabrictool 8 @100G %400G --media=dac; echo $?
 fabrictool: a 4-lane DAC splitter ends in modules, and in a full mesh every
 switch has the same ports, so there is nothing at 100G for those modules to
 plug into. Use --media=optic and join the lanes in a patch field, or put the
-splitter at one end only with /star or /leaf-spine
+splitter at one end only with --shape=star or --shape=leaf-spine
 3
 ```
 
@@ -798,7 +795,6 @@ $ fabrictool 48 --shape=star @25G %100G =32
   Topology       star  (one hub, everything else connected to it)
   Links          47  (1 link from the hub to each spoke)
   Link speed     25G
-  Per spoke      25G
   Per switch     the hub 47 links, 1.175T
                  each spoke 1 link, 25G
   Ports          12 x 100G on the hub  (4 lanes each: 47 used, 1 spare)
@@ -807,6 +803,7 @@ $ fabrictool 48 --shape=star @25G %100G =32
   Fabric total   1.175T  (47 x 25G, one direction)
   Hops           2  (spoke to hub to spoke)
   Resilience     any single link failure splits the fabric
+  Caution        the hub is a single point of failure: every spoke is cut off when it goes
 
 Cabling 48 switches at 25G
   Arrangement    the hub's 100G ports split 4 ways, a whole 25G port at each spoke
@@ -845,7 +842,6 @@ $ fabrictool 16 +2 @100G %400G -48@25G
   Topology       leaf-spine  (every leaf to every spine)
   Links          32  (1 link from each leaf to each spine)
   Link speed     100G
-  Per uplink     100G
   Per switch     each spine 16 links, 1.6T
                  each leaf 2 links, 200G
   Ports          4 x 400G on each spine  (4 lanes each: 16 used, 0 spare)
@@ -859,7 +855,7 @@ $ fabrictool 16 +2 @100G %400G -48@25G
 
 Cabling 16 leaves + 2 spines at 100G
   Arrangement    each spine's 400G ports split 4 ways, a whole 100G port at each leaf
-  Spine ports    8  (32 lanes, 32 used, 0 spare)
+  Spine ports    8  (across 2 spines: 32 lanes, 32 used, 0 spare)
 
   Qty  Item                             Where
   ---  -------------------------------  -----------------------------------------------
@@ -911,7 +907,6 @@ $ fabrictool 2 +2 @100G -48@25G
   Topology       leaf-spine  (every leaf to every spine)
   Links          4  (1 link from each leaf to each spine)
   Link speed     100G
-  Per uplink     100G
   Per switch     each spine 2 links, 200G
                  each leaf 2 links, 200G
   Ports          2 x 100G on each spine
@@ -954,7 +949,6 @@ $ fabrictool 32 +4 @100G %400G -48@25G =56
   Topology       leaf-spine  (every leaf to every spine)
   Links          128  (1 link from each leaf to each spine)
   Link speed     100G
-  Per uplink     100G
   Per switch     each spine 32 links, 3.2T
                  each leaf 4 links, 400G
   Ports          8 x 400G on each spine  (4 lanes each: 32 used, 0 spare)
@@ -968,7 +962,7 @@ $ fabrictool 32 +4 @100G %400G -48@25G =56
 
 Cabling 32 leaves + 4 spines at 100G
   Arrangement    each spine's 400G ports split 4 ways, a whole 100G port at each leaf
-  Spine ports    32  (128 lanes, 128 used, 0 spare)
+  Spine ports    32  (across 4 spines: 128 lanes, 128 used, 0 spare)
 
     Qty  Item                             Where
   -----  -------------------------------  -----------------------------------------------
@@ -1030,7 +1024,6 @@ $ fabrictool 8 +2 @100G =4@100G:leaf =4@100G:spine
   Topology       leaf-spine  (every leaf to every spine)
   Links          16  (1 link from each leaf to each spine)
   Link speed     100G
-  Per uplink     100G
   Per switch     each spine 8 links, 800G
                  each leaf 2 links, 200G
   Ports          8 x 100G on each spine
@@ -1082,7 +1075,6 @@ $ fabrictool 8 +4 @100G -48@25G =32@400G =4@100G =2@200G =48@25G
   Topology       leaf-spine  (every leaf to every spine)
   Links          32  (1 link from each leaf to each spine)
   Link speed     100G
-  Per uplink     100G
   Per switch     each spine 8 links, 800G
                  each leaf 4 links, 400G
   Ports          8 x 100G on each spine
@@ -1138,7 +1130,6 @@ $ fabrictool 8 +4 @100G %400G -48@25G =32@400G =4@100G =2@200G =48@25G
   Topology       leaf-spine  (every leaf to every spine)
   Links          32  (1 link from each leaf to each spine)
   Link speed     100G
-  Per uplink     100G
   Per switch     each spine 8 links, 800G
                  each leaf 4 links, 400G
   Ports          2 x 400G on each spine  (4 lanes each: 8 used, 0 spare)
@@ -1152,7 +1143,7 @@ $ fabrictool 8 +4 @100G %400G -48@25G =32@400G =4@100G =2@200G =48@25G
 
 Cabling 8 leaves + 4 spines at 100G
   Arrangement    each spine's 400G ports split 4 ways, a whole 100G port at each leaf
-  Spine ports    8  (32 lanes, 32 used, 0 spare)
+  Spine ports    8  (across 4 spines: 32 lanes, 32 used, 0 spare)
 
   Qty  Item                             Where
   ---  -------------------------------  ----------------------------------------------
@@ -1196,7 +1187,6 @@ $ fabrictool 8 +4 @100G %400G -48@25G --media=aoc
   Topology       leaf-spine  (every leaf to every spine)
   Links          32  (1 link from each leaf to each spine)
   Link speed     100G
-  Per uplink     100G
   Per switch     each spine 8 links, 800G
                  each leaf 4 links, 400G
   Ports          2 x 400G on each spine  (4 lanes each: 8 used, 0 spare)
@@ -1210,7 +1200,7 @@ $ fabrictool 8 +4 @100G %400G -48@25G --media=aoc
 
 Cabling 8 leaves + 4 spines at 100G
   Arrangement    each spine's 400G ports split 4 ways, a whole 100G port at each leaf
-  Spine ports    8  (32 lanes, 32 used, 0 spare)
+  Spine ports    8  (across 4 spines: 32 lanes, 32 used, 0 spare)
 
   Qty  Item                         Where
   ---  ---------------------------  ----------------------------------------------
@@ -1238,7 +1228,6 @@ $ fabrictool 8 +4 @200G %400G -48@25G =32@400G =4@100G =2@200G =48@25G
   Topology       leaf-spine  (every leaf to every spine)
   Links          32  (1 link from each leaf to each spine)
   Link speed     200G
-  Per uplink     200G
   Per switch     each spine 8 links, 1.6T
                  each leaf 4 links, 800G
   Ports          4 x 400G on each spine  (2 lanes each: 8 used, 0 spare)
@@ -1252,7 +1241,7 @@ $ fabrictool 8 +4 @200G %400G -48@25G =32@400G =4@100G =2@200G =48@25G
 
 Cabling 8 leaves + 4 spines at 200G
   Arrangement    each spine's 400G ports split 2 ways, a whole 200G port at each leaf
-  Spine ports    16  (32 lanes, 32 used, 0 spare)
+  Spine ports    16  (across 4 spines: 32 lanes, 32 used, 0 spare)
 
   Qty  Item                             Where
   ---  -------------------------------  ----------------------------------------------
@@ -1309,7 +1298,11 @@ separate devices either way:
 
 ```
 $ fabrictool 8 +2 @200G %400G -48@25G | grep -E 'Per leaf|Spine ports'
+  Spine ports    8  (across 2 spines: 16 lanes, 16 used, 0 spare)
+  Per leaf       3:1  (1.2T attached against 400G of fabric)
 $ fabrictool 8 +2 @100G %400G -48@25G | grep -E 'Per leaf|Spine ports'
+  Spine ports    4  (across 2 spines: 16 lanes, 16 used, 0 spare)
+  Per leaf       6:1  (1.2T attached against 200G of fabric)
 ```
 
 Add the spine ports; the leaf then uses both 200G ports and two of its four
@@ -1329,7 +1322,6 @@ $ fabrictool 8 @100G %400G --schedule -n 6
   Topology       full mesh  (every switch to every other)
   Links          28  (1 link between each pair)
   Link speed     100G
-  Per pair       100G
   Per switch     7 links, 700G
   Ports          2 x 400G on each switch  (4 lanes each: 7 used, 1 spare)
   Bisection      1.6T  (16 links across the middle)
@@ -1339,7 +1331,7 @@ $ fabrictool 8 @100G %400G --schedule -n 6
 
 Cabling 8 switches at 100G
   Arrangement    400G ports split 4 ways at both ends, lanes joined in a patch field
-  Trunk ports    16  (64 lanes, 56 used, 8 spare)
+  Trunk ports    16  (across 8 switches: 64 lanes, 56 used, 8 spare)
 
   Qty  Item                             Where
   ---  -------------------------------  -----------------------------------------------------------
@@ -1357,13 +1349,13 @@ Patch schedule for 8 switches
     sw1:1/4  ->  sw5:1/1
     sw1:2/1  ->  sw6:1/1
     sw1:2/2  ->  sw7:1/1
-    ... (showing 6 of 28; use --all or -n N)
+    ... (showing 6 of 28; drop -n for all of them)
 ```
 
 Lanes fill a port before the next port is used, and the order is fixed, so two
-people cabling from the same schedule wire the same fabric. `--all` prints
-every link, and the list stays lazy - piping a large one into `head` returns
-immediately.
+people cabling from the same schedule wire the same fabric. The schedule
+prints in full unless `-n` trims it, and the list stays lazy, so piping a
+large one into `head` returns immediately.
 
 A list of cables is the wrong shape for checking that a fabric is wired the
 way it was meant to be. `--dot --schedule` draws the same links instead, which
@@ -1431,6 +1423,7 @@ $ fabrictool 4 +2 @100G %400G --dot --schedule
   spine2 -- leaf2 [label="spine2:1/2 - leaf2:2"];
   spine2 -- leaf3 [label="spine2:1/3 - leaf3:2"];
   spine2 -- leaf4 [label="spine2:1/4 - leaf4:2"];
+}
 ```
 
 A mesh of a few hundred switches makes a graph Graphviz will struggle to lay

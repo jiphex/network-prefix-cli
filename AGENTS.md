@@ -14,7 +14,7 @@ programs, so a change to one of those modules is a change to both tools.
 
 ```
 cargo build
-cargo test --locked --all-targets      # 294 tests: 198 unit, 10 CLI, 86 end-to-end
+cargo test --locked --all-targets      # unit, CLI and end-to-end tests
 cargo clippy --locked --all-targets
 cargo fmt --all --check
 ```
@@ -107,7 +107,7 @@ nothing about the blocks says how many. Those lines ignore `-n` - truncating one
 wrong answer rather than a short one.
 
 fabrictool's `--quiet` is a bill of materials, `quantity<TAB>item`, or the
-patch schedule when `.` asked for one - never both at once. Two shapes of line
+patch schedule when `--schedule` asked for one - never both at once. Two shapes of line
 in one stream is worse than either, and a reader piping it wants one of them.
 The item names are an interface: `transceiver-400G` and `breakout-1x4-400G`
 are what a script greps for, so treat renaming one as a breaking change.

@@ -89,7 +89,7 @@ EXAMPLES:
         the same question where both kinds of switch have 100G ports, so
         each one has to say which switches it is about
 
-  fabrictool 8 @100G %400G --schedule --all
+  fabrictool 8 @100G %400G --schedule
         the schedule to take to the rack, every link of it
 
   fabrictool 16 +2 @100G %400G --dot | dot -Tpng > fabric.png
@@ -109,7 +109,7 @@ EXIT STATUS:
 
   Under --quiet an =N is a question, so its answer is the exit status:
 
-      fabrictool 32 @100G %400G =32 -q > /dev/null || echo needs bigger switches
+      fabrictool 48 @100G =32 -q > /dev/null || echo needs bigger switches
 
   Not fitting is 4 rather than 1 so that it stays distinct from bad input: a
   mistyped port count is a different thing from a confident no.
@@ -140,13 +140,9 @@ struct Cli {
     #[arg(value_name = "OP", allow_hyphen_values = true)]
     ops: Vec<String>,
 
-    /// Maximum links to list in the patch schedule
-    #[arg(short = 'n', long, value_name = "N", default_value_t = 8)]
-    limit: usize,
-
-    /// List every link, however many there are
-    #[arg(short, long)]
-    all: bool,
+    /// Show only the first N links of the patch schedule
+    #[arg(short = 'n', long, value_name = "N")]
+    limit: Option<usize>,
 
     /// Print the bill of materials only, one item per line, for piping
     #[arg(short, long)]
@@ -248,7 +244,6 @@ fn run(cli: &Cli) -> Result<ExitCode, Problem> {
 
     let opts = render::Opts {
         limit: cli.limit,
-        all: cli.all,
         // Machine-readable output is never coloured, whatever was asked for.
         style: if cli.json || cli.quiet || cli.dot {
             style::Style::plain()
@@ -270,8 +265,7 @@ fn run(cli: &Cli) -> Result<ExitCode, Problem> {
     .and_then(|()| w.flush());
 
     if let Err(e) = written {
-        // `fabrictool 256 --schedule --all | head` is a normal way to use
-        // this.
+        // `fabrictool 256 --schedule | head` is a normal way to use this.
         if e.kind() == io::ErrorKind::BrokenPipe {
             return Ok(ExitCode::SUCCESS);
         }
@@ -303,22 +297,22 @@ mod tests {
         assert_eq!(cli.switches, "8");
         assert_eq!(cli.ops, vec!["@100G", "%400G"]);
         assert!(cli.json);
-        assert_eq!(cli.limit, 2);
+        assert_eq!(cli.limit, Some(2));
     }
 
     #[test]
     fn flags_may_precede_operators() {
-        let cli = parse(&["fabrictool", "--all", "16", "--shape=ring", "x2"]);
+        let cli = parse(&["fabrictool", "--json", "16", "--shape=ring", "x2"]);
         assert_eq!(cli.switches, "16");
         assert_eq!(cli.ops, vec!["x2"]);
         assert_eq!(cli.shape, Some(Topology::Ring));
-        assert!(cli.all);
+        assert!(cli.json);
     }
 
     #[test]
     fn the_switch_count_is_not_mistaken_for_a_flag_value() {
         let cli = parse(&["fabrictool", "-n", "4", "8", "--schedule"]);
-        assert_eq!((cli.switches.as_str(), cli.limit), ("8", 4));
+        assert_eq!((cli.switches.as_str(), cli.limit), ("8", Some(4)));
         assert!(cli.schedule);
         assert!(cli.ops.is_empty());
     }

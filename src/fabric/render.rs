@@ -9,7 +9,7 @@
 //! width but the formatter counts it anyway, and `--quiet` and `--json` are
 //! never coloured, whatever `--color` says.
 
-use super::plan::{Arrangement, Budget, Item, Plan, Ratio, Report, Role, Side};
+use super::plan::{Arrangement, Budget, Item, Plan, Ratio, Report, Side};
 use super::schedule::Schedule;
 use super::speed::Speed;
 use super::{Media, Topology};
@@ -19,17 +19,16 @@ use crate::style::Style;
 use std::io::{self, Write};
 
 pub struct Opts {
-    /// How many links to list in the patch schedule.
-    pub limit: usize,
-    /// List every link, however many there are.
-    pub all: bool,
+    /// How many links to list in the patch schedule, when the reader asked
+    /// for fewer than all of them.
+    pub limit: Option<usize>,
     /// Colour for the human-readable report. Machine output ignores it.
     pub style: Style,
 }
 
 impl Opts {
     fn take(&self) -> usize {
-        if self.all { usize::MAX } else { self.limit }
+        self.limit.unwrap_or(usize::MAX)
     }
 }
 
@@ -89,42 +88,41 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
     )?;
     if let Some(s) = p.speed {
         field(w, o, "Link speed", &s.to_string())?;
-        field(
-            w,
-            o,
-            &format!("Per {}", pair(p.topology)),
-            &if p.per_pair == 1 {
-                s.total(1).to_string()
-            } else {
-                format!(
+        // With one link to a pair this row would only repeat the link speed,
+        // so it appears when there is more than one to add up.
+        if p.per_pair > 1 {
+            field(
+                w,
+                o,
+                &format!("Per {}", pair(p.topology)),
+                &format!(
                     "{}  {}",
                     s.total(p.per_pair),
                     o.style.dim(&format!("({} x {s})", p.per_pair))
-                )
-            },
-        )?;
+                ),
+            )?;
+        }
     }
 
     let multi = p.sides.len() > 1;
-    rows(
-        w,
-        o,
-        "Per switch",
-        p.sides
-            .iter()
-            .map(|s| {
-                let links = plural(s.degree, "link");
-                match (multi, p.speed) {
-                    (false, None) => links,
-                    (false, Some(sp)) => format!("{links}, {}", sp.total(s.degree)),
-                    (true, None) => format!("{} {links}", s.role.label()),
-                    (true, Some(sp)) => {
-                        format!("{} {links}, {}", s.role.label(), sp.total(s.degree))
+    if let Some(sp) = p.speed {
+        rows(
+            w,
+            o,
+            "Per switch",
+            p.sides
+                .iter()
+                .map(|s| {
+                    let links = plural(s.degree, "link");
+                    let capacity = sp.total(s.degree);
+                    match multi {
+                        false => format!("{links}, {capacity}"),
+                        true => format!("{} {links}, {capacity}", s.role.label_for(s.switches)),
                     }
-                }
-            })
-            .collect(),
-    )?;
+                })
+                .collect(),
+        )?;
+    }
     rows(
         w,
         o,
@@ -311,10 +309,9 @@ fn ports(side: &Side, multi: bool, o: &Opts) -> String {
 /// Whose ports a line is about. With one kind of switch there is nothing to
 /// distinguish, so it stays the plain "each switch" it always was.
 fn whose(side: &Side, multi: bool) -> String {
-    match (multi, side.role) {
-        (false, _) => " on each switch".to_string(),
-        (true, Role::Spoke) if side.switches == 1 => " on the spoke".to_string(),
-        (true, r) => format!(" on {}", r.label()),
+    match multi {
+        false => " on each switch".to_string(),
+        true => format!(" on {}", side.role.label_for(side.switches)),
     }
 }
 
@@ -462,6 +459,22 @@ fn scaled(a: u64, b: u64) -> String {
     )
 }
 
+/// How many switches the trunk-port count is spread over, when that is more
+/// than one. The line above it in the report counts ports on one switch, so
+/// this one has to say that it is counting the whole fabric.
+fn trunk_whose(p: &Plan) -> String {
+    let (count, whose) = match (p.arrangement, p.topology) {
+        (Arrangement::SplitUpstream, Topology::LeafSpine) => (p.spines, "spines"),
+        (Arrangement::SplitUpstream, _) => (1, "switches"),
+        _ => (p.switches, "switches"),
+    };
+    if count > 1 {
+        format!("across {count} {whose}: ")
+    } else {
+        String::new()
+    }
+}
+
 fn cabling(w: &mut impl Write, p: &Plan, o: &Opts) -> io::Result<()> {
     heading(
         w,
@@ -486,7 +499,8 @@ fn cabling(w: &mut impl Write, p: &Plan, o: &Opts) -> io::Result<()> {
                 "{}  {}",
                 num::group(&p.trunk_ports.to_string()),
                 o.style.dim(&format!(
-                    "({} lanes, {} used, {} spare)",
+                    "({}{} lanes, {} used, {} spare)",
+                    trunk_whose(p),
                     num::group(&lanes.to_string()),
                     num::group(&(lanes - p.spare_lanes).to_string()),
                     num::group(&p.spare_lanes.to_string()),
@@ -606,14 +620,16 @@ fn budget(w: &mut impl Write, p: &Plan, b: &Budget, o: &Opts) -> io::Result<()> 
             (None, _) => "it fits".to_string(),
         },
         None => "it fits".to_string(),
-        Some(s) if p.sides.len() > 1 => format!("{} is {} short", s.role.label(), s.short),
+        Some(s) if p.sides.len() > 1 => {
+            format!("{} is {} short", s.role.label_for(s.switches), s.short)
+        }
         Some(s) => format!("{} short on each switch", plural(s.short, "port")),
     };
     writeln!(w, "  {verdict} {} {why}", o.style.dim("-"))?;
     let width = b
         .sides
         .iter()
-        .map(|s| s.role.label().len())
+        .map(|s| s.role.label_for(s.switches).len())
         .max()
         .unwrap_or(0);
     for s in &b.sides {
@@ -640,7 +656,11 @@ fn budget(w: &mut impl Write, p: &Plan, b: &Budget, o: &Opts) -> io::Result<()> 
         } else {
             o.style.dim(&format!("{} spare", s.spare))
         };
-        writeln!(w, "  {:<width$}  {used}, {tail}", s.role.label())?;
+        writeln!(
+            w,
+            "  {:<width$}  {used}, {tail}",
+            s.role.label_for(s.switches)
+        )?;
     }
     Ok(())
 }
@@ -687,7 +707,7 @@ fn schedule(w: &mut impl Write, p: &Plan, o: &Opts) -> io::Result<()> {
             w,
             "{}",
             o.style.dim(&format!(
-                "    ... (showing {shown} of {}; use --all or -n N)",
+                "    ... (showing {shown} of {}; drop -n for all of them)",
                 num::group(&p.links.to_string())
             ))
         )?;
@@ -967,26 +987,23 @@ mod tests {
         };
         let mut ops = Vec::new();
         for arg in args {
-            match arg.strip_prefix('/') {
+            match arg.strip_prefix("--shape=") {
                 Some(shape) => {
                     opts.shape = Some(
                         <Topology as clap::ValueEnum>::from_str(&shape.to_ascii_lowercase(), true)
                             .expect("a shape"),
                     )
                 }
-                None if *arg == "." => opts.schedule = true,
+                None if *arg == "--schedule" => opts.schedule = true,
                 None => ops.push(ops::parse(arg).expect("an operator")),
             }
         }
         plan::build(switches, &ops, opts).expect("plans")
     }
 
+    /// The default the binary uses: the whole schedule, however long it is.
     fn opts(style: Style) -> Opts {
-        Opts {
-            limit: 8,
-            all: false,
-            style,
-        }
+        Opts { limit: None, style }
     }
 
     fn rendered(switches: u64, args: &[&str]) -> String {
@@ -1027,12 +1044,18 @@ mod tests {
     #[test]
     fn colour_never_changes_the_layout() {
         for (switches, args) in [
-            (8u64, vec!["@100G", "%400G", "=32", "."]),
-            (9, vec!["@25G", "%100G", "/star", "=16", "."]),
-            (4, vec!["/ring", "x2", "@400G", "=4", "."]),
+            (8u64, vec!["@100G", "%400G", "=32", "--schedule"]),
+            (
+                9,
+                vec!["@25G", "%100G", "--shape=star", "=16", "--schedule"],
+            ),
+            (4, vec!["--shape=ring", "x2", "@400G", "=4", "--schedule"]),
             (2, vec![]),
             (16, vec!["@300G", "%3", "=8"]),
-            (16, vec!["+2", "@100G", "%400G", "-48@25G", "=56", "."]),
+            (
+                16,
+                vec!["+2", "@100G", "%400G", "-48@25G", "=56", "--schedule"],
+            ),
             (2, vec!["+2", "@100G", "-48@25G"]),
             (16, vec!["+1", "@100G", "-48@25G"]),
             (
@@ -1070,6 +1093,46 @@ mod tests {
         assert!(s.contains("Fabric total   2.8T"), "{s}");
     }
 
+    /// Two rows used to restate what the report had already said: the
+    /// per-pair capacity when a pair has one link, and the per-switch link
+    /// count when there was no speed to turn it into a capacity.
+    #[test]
+    fn the_report_does_not_say_the_same_thing_twice() {
+        // One link to a pair, so the per-pair row would repeat the link speed.
+        let s = rendered(8, &["@100G"]);
+        assert!(s.contains("Link speed     100G"), "{s}");
+        assert!(!s.contains("Per pair"), "{s}");
+        // Two links to a pair is a sum worth showing.
+        let s = rendered(8, &["@100G", "x2"]);
+        assert!(s.contains("Per pair       200G  (2 x 100G)"), "{s}");
+
+        // Without a speed the per-switch row is the port count again.
+        let s = rendered(8, &[]);
+        assert!(!s.contains("Per switch"), "{s}");
+        assert!(s.contains("Ports          7 ports on each switch"), "{s}");
+        // With one it carries the capacity, which the ports row does not.
+        let s = rendered(8, &["@100G"]);
+        assert!(s.contains("Per switch     7 links, 700G"), "{s}");
+    }
+
+    #[test]
+    fn one_of_a_kind_of_switch_is_the_one_not_each() {
+        let s = rendered(2, &["--shape=star", "@100G", "-24@10G", "=32:hub"]);
+        assert!(s.contains("the hub 1 link, 100G"), "{s}");
+        assert!(s.contains("the spoke 1 link, 100G"), "{s}");
+        assert!(s.contains("1 x 100G on the spoke"), "{s}");
+        assert!(s.contains("24 x 10G on the spoke"), "{s}");
+        // The rows say "the spoke"; only the topology's own description of
+        // the shape still talks about spokes in general.
+        assert!(!s.contains("each spoke 1 link"), "{s}");
+        assert!(!s.contains("on each spoke"), "{s}");
+        // The budget rows follow the same rule.
+        assert!(
+            s.contains("the hub  1 of 32 ports at 100G, 31 spare"),
+            "{s}"
+        );
+    }
+
     #[test]
     fn a_fabric_with_no_speeds_leaves_the_rates_out() {
         let s = rendered(8, &[]);
@@ -1081,7 +1144,7 @@ mod tests {
 
     #[test]
     fn a_star_reports_its_two_kinds_of_switch_separately() {
-        let s = rendered(9, &["@25G", "%100G", "/star"]);
+        let s = rendered(9, &["@25G", "%100G", "--shape=star"]);
         assert!(s.contains("the hub 8 links, 200G"), "{s}");
         assert!(s.contains("each spoke 1 link, 25G"), "{s}");
         assert!(s.contains("2 x 100G on the hub"), "{s}");
@@ -1095,7 +1158,7 @@ mod tests {
             s.contains("Ports on a 32-port switch\n  yes - it fits"),
             "{s}"
         );
-        let s = rendered(48, &["@100G", "/star", "=32"]);
+        let s = rendered(48, &["@100G", "--shape=star", "=32"]);
         assert!(
             s.contains("Ports on a 32-port switch\n  no - the hub is 15 short"),
             "{s}"
@@ -1103,12 +1166,27 @@ mod tests {
         assert!(s.contains("47 of 32 ports at 100G, 15 short"), "{s}");
     }
 
+    /// A schedule that was asked for comes out whole. Trimming it is what
+    /// `-n` is for, and only then does it say it was trimmed.
     #[test]
-    fn a_long_schedule_says_it_was_cut_short() {
-        let s = rendered(8, &["."]);
+    fn a_schedule_comes_out_whole_unless_it_was_trimmed() {
+        let r = report(8, &["--schedule"], Media::Optic);
+        let mut out = Vec::new();
+        text(&mut out, &r, &opts(Style::plain())).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert_eq!(s.lines().filter(|l| l.contains("->")).count(), 28);
+        assert!(!s.contains("showing"), "{s}");
+
+        let mut out = Vec::new();
+        let trimmed = Opts {
+            limit: Some(3),
+            style: Style::plain(),
+        };
+        text(&mut out, &r, &trimmed).unwrap();
+        let s = String::from_utf8(out).unwrap();
         assert!(s.contains("sw1:1  ->  sw2:1"), "{s}");
         assert!(
-            s.contains("... (showing 8 of 28; use --all or -n N)"),
+            s.contains("... (showing 3 of 28; drop -n for all of them)"),
             "{s}"
         );
     }
@@ -1132,7 +1210,7 @@ mod tests {
 
     #[test]
     fn quiet_prints_the_schedule_when_the_schedule_was_asked_for() {
-        let s = quieted(4, &["."]);
+        let s = quieted(4, &["--schedule"]);
         assert_eq!(
             s,
             "sw1:1 sw2:1\nsw1:2 sw3:1\nsw1:3 sw4:1\nsw2:2 sw3:2\nsw2:3 sw4:2\nsw3:3 sw4:3\n"
@@ -1164,6 +1242,28 @@ mod tests {
         assert!(
             s.contains("each spine's 400G ports split 4 ways, a whole 100G port at each leaf"),
             "{s}"
+        );
+    }
+
+    #[test]
+    fn a_trunk_port_count_says_it_is_the_whole_fabric() {
+        // The Ports line above it counts one switch's front panel, so this
+        // one has to be readable as a total rather than as more of the same.
+        let mesh = rendered(8, &["@100G", "%400G"]);
+        assert!(
+            mesh.contains("Trunk ports    16  (across 8 switches: 64 lanes, 56 used, 8 spare)"),
+            "{mesh}"
+        );
+        let clos = rendered(8, &["+4", "@100G", "%400G"]);
+        assert!(
+            clos.contains("Spine ports    8  (across 4 spines: 32 lanes, 32 used, 0 spare)"),
+            "{clos}"
+        );
+        // A hub is one switch, so there is nothing to spread the count over.
+        let star = rendered(48, &["--shape=star", "@25G", "%100G"]);
+        assert!(
+            star.contains("Hub ports      12  (48 lanes, 47 used, 1 spare)"),
+            "{star}"
         );
     }
 
@@ -1296,7 +1396,7 @@ mod tests {
 
     #[test]
     fn json_carries_exact_numbers() {
-        let r = report(8, &["@100G", "%400G", "=32", "."], Media::Optic);
+        let r = report(8, &["@100G", "%400G", "=32", "--schedule"], Media::Optic);
         let mut out = Vec::new();
         json(&mut out, &r, &opts(Style::plain())).unwrap();
         let s = String::from_utf8(out).unwrap();
@@ -1311,7 +1411,7 @@ mod tests {
             "\"bisection_mbps\": 1600000",
             "\"total_mbps\": 2800000",
             "\"fits\": true",
-            "\"listed\": 8",
+            "\"listed\": 28",
             "\"a\": \"sw1:1/1\"",
         ] {
             assert!(s.contains(want), "{want} missing from {s}");

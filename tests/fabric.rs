@@ -83,7 +83,7 @@ fn flags_and_operators_may_be_interleaved() {
 
 #[test]
 fn a_schedule_lists_every_link_when_asked() {
-    let s = stdout(&["8", "--schedule", "--all", "--color=never"]);
+    let s = stdout(&["8", "--schedule", "--color=never"]);
     let patches = s.lines().filter(|l| l.contains("->")).count();
     assert_eq!(patches, 28);
     assert!(s.contains("sw1:1  ->  sw2:1"), "{s}");
@@ -211,7 +211,7 @@ fn a_rack_is_a_pair_of_spines_and_survives_losing_one() {
     );
     assert!(s.contains("One spine down 12:1"), "{s}");
     // Both leaves reach both spines, and nothing is wired twice.
-    let schedule = stdout(&["2", "+2", "--schedule", "--all", "-q"]);
+    let schedule = stdout(&["2", "+2", "--schedule", "-q"]);
     assert_eq!(
         schedule,
         "spine1:1 leaf1:1\nspine1:2 leaf2:1\nspine2:1 leaf1:2\nspine2:2 leaf2:2\n"
@@ -345,6 +345,28 @@ fn a_budget_can_name_the_switches_it_is_about() {
     assert!(stderr(&["8", "+2", "@100G", "=4@100G:banana"]).contains("not a kind of switch"));
 }
 
+/// A star of two switches is the smallest star, and its hub and spoke are
+/// still different jobs.
+#[test]
+fn the_smallest_star_keeps_its_servers() {
+    let s = stdout(&["2", "--shape=star", "@100G", "-24@10G", "--color=never"]);
+    assert!(s.contains("24 x 10G on the spoke"), "{s}");
+    assert!(s.contains("Per spoke      2.4:1"), "{s}");
+    // And the hub can be asked about.
+    let s = stdout(&["2", "--shape=star", "@100G", "=32:hub", "--color=never"]);
+    assert!(s.contains("Ports on a 32-port hub"), "{s}");
+}
+
+#[test]
+fn one_leaf_under_a_pair_of_spines_is_a_fabric() {
+    let s = stdout(&["1", "+2", "@100G", "--color=never"]);
+    assert!(s.starts_with("1 leaf + 2 spines"), "{s}");
+    assert!(s.contains("Switches       3  (1 leaf, 2 spines)"), "{s}");
+    assert!(s.contains("Links          2"), "{s}");
+    // A lone switch with nothing above it is still not a fabric.
+    assert_eq!(run(&["1", "@100G"]).status.code(), Some(1));
+}
+
 #[test]
 fn servers_hang_off_the_edge_of_whatever_shape_it_is() {
     assert!(stdout(&["8", "-24@10G", "@100G", "--color=never"]).contains("on each switch"));
@@ -359,7 +381,7 @@ fn servers_hang_off_the_edge_of_whatever_shape_it_is() {
 
 #[test]
 fn the_schedule_names_spines_and_leaves() {
-    let s = stdout(&["4", "+2", "--schedule", "--all", "-q"]);
+    let s = stdout(&["4", "+2", "--schedule", "-q"]);
     assert_eq!(
         s,
         "spine1:1 leaf1:1\nspine1:2 leaf2:1\nspine1:3 leaf3:1\nspine1:4 leaf4:1\n\
@@ -437,21 +459,13 @@ fn the_report_never_argues_with_itself() {
     // Every count in the report is derived from the same plan, so the
     // headline link count and the schedule have to agree, whatever the shape.
     for args in [
-        vec!["7", "--schedule", "--all"],
-        vec!["7", "--shape=ring", "--schedule", "--all"],
-        vec!["7", "--shape=star", "--schedule", "--all"],
-        vec!["5", "x3", "--schedule", "--all"],
-        vec!["6", "@100G", "%400G", "--schedule", "--all"],
-        vec!["6", "+2", "--schedule", "--all"],
-        vec![
-            "6",
-            "+3",
-            "@100G",
-            "%400G",
-            "-24@10G",
-            "--schedule",
-            "--all",
-        ],
+        vec!["7", "--schedule"],
+        vec!["7", "--shape=ring", "--schedule"],
+        vec!["7", "--shape=star", "--schedule"],
+        vec!["5", "x3", "--schedule"],
+        vec!["6", "@100G", "%400G", "--schedule"],
+        vec!["6", "+2", "--schedule"],
+        vec!["6", "+3", "@100G", "%400G", "-24@10G", "--schedule"],
     ] {
         let mut with_colour = args.clone();
         with_colour.push("--color=never");
