@@ -662,6 +662,24 @@ fn budget(w: &mut impl Write, p: &Plan, b: &Budget, o: &Opts) -> io::Result<()> 
             s.role.label_for(s.switches)
         )?;
     }
+    // A speed that picks out more than one kind of switch answers about all
+    // of them, which is right and still surprising: a reader asking about a
+    // leaf's front panel gets a verdict covering the spines too.
+    if b.role.is_none() && b.speed.is_some() && b.sides.len() > 1 {
+        let which = b
+            .sides
+            .iter()
+            .map(|s| format!(":{}", s.role.singular()))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        writeln!(
+            w,
+            "  {}",
+            o.style.dim(&format!(
+                "this speed is on more than one kind of switch; {which} asks about one of them"
+            ))
+        )?;
+    }
     Ok(())
 }
 
@@ -1243,6 +1261,25 @@ mod tests {
             s.contains("each spine's 400G ports split 4 ways, a whole 100G port at each leaf"),
             "{s}"
         );
+    }
+
+    #[test]
+    fn a_budget_covering_two_kinds_of_switch_says_so() {
+        // A 100G link from a leaf to a spine makes both of them 100G
+        // switches, so =4@100G answers about both and reads as a refusal of
+        // the leaf. The note is what stops that being read as the whole
+        // story.
+        let s = rendered(8, &["+4", "@100G", "-48@25G", "=4@100G"]);
+        assert!(s.contains("no - each spine is 4 short"), "{s}");
+        assert!(s.contains(":spine or :leaf asks about one of them"), "{s}");
+        // Narrowed to one kind of switch, the same question is a yes and
+        // there is nothing left to warn about.
+        let leaf = rendered(8, &["+4", "@100G", "-48@25G", "=4@100G:leaf"]);
+        assert!(leaf.contains("yes - it fits"), "{leaf}");
+        assert!(!leaf.contains("more than one kind of switch"), "{leaf}");
+        // Nor is there when only one kind of switch has a port at the speed.
+        let split = rendered(8, &["+4", "@100G", "%400G", "-48@25G", "=4@100G"]);
+        assert!(!split.contains("more than one kind of switch"), "{split}");
     }
 
     #[test]

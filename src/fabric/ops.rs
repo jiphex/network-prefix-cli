@@ -167,8 +167,8 @@ fn access(payload: &str) -> Result<Access, String> {
             "'-{payload}' needs a speed as well as a count: write it like -48@25G"
         ));
     };
-    // Parsed wide so that a number too big to be a port count is answered
-    // by the limit below rather than by a complaint about the spelling.
+    // It is parsed wide so that a number too big to be a port count is
+    // answered by the limit below rather than by a complaint about spelling.
     let ports: u64 = count
         .parse()
         .map_err(|_| format!("'{count}' is not a number of ports: write it like -48@25G"))?;
@@ -212,8 +212,8 @@ fn budget(payload: &str) -> Result<Budget, String> {
         Some((count, speed)) => (count, Some(speed::parse(speed)?)),
         None => (payload, None),
     };
-    // Parsed wide for the same reason a server-port count is: a number past
-    // the limit deserves the limit as its answer.
+    // It is parsed wide for the same reason a server-port count is, so that
+    // a number past the limit is answered with the limit.
     let ports: u64 = count.parse().map_err(|_| {
         format!("'{count}' is not a port count: write it like =32, =4@100G or =4@100G:leaf")
     })?;

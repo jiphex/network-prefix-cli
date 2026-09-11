@@ -43,8 +43,9 @@ OPERATORS:
   and a bare =N asks about the whole front panel. A speed is usually enough
   to say which switches are meant, since only one kind of switch has ports at
   it; where two do - leaves and spines both at 100G - :leaf or :spine says
-  which. Several questions may be given; under --quiet any one of them not
-  fitting is the exit status.
+  which, and the answer says so when the speed was not enough on its own.
+  Several questions may be given; under --quiet any one of them not fitting
+  is the exit status.
 
   Server ports are the other half of an oversubscription ratio: what is
   attached to a switch against what leaves it. They sit on whichever

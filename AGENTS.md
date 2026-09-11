@@ -300,8 +300,11 @@ nothing runs at is answered as such rather than silently fitting.
 
 The third exists because a speed picks out a kind of switch in most fabrics
 but not all: leaves and spines both at 100G is an ordinary build, and without
-a role the answer covers both. A role the fabric has not got is refused rather
-than answered yes, since it means the question was asked of the wrong fabric.
+a role the answer covers both. Covering both is the right answer to the
+question as asked and still a surprising one, so the budget block says which
+roles the speed reached and names the `:ROLE` that narrows it. A role the
+fabric has not got is refused rather than answered yes, since it means the
+question was asked of the wrong fabric.
 
 `Role` lives in `fabric/mod.rs` alongside `Topology` and `Media` rather than
 in `plan.rs`, because the grammar has to name one, and a parser reaching into

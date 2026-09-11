@@ -1065,10 +1065,16 @@ fabrictool: a full mesh has no leaves: it has 8 switches
 **The first option puts one 100G link in each spine port.** It is the simplest
 cabling, with a 100G transceiver at each end and a fibre between them, no
 breakout and no patch field. It costs spine ports - eight of each spine's 32,
-one per leaf - and 64 transceivers:
+one per leaf - and 64 transceivers.
+
+Both kinds of switch run at 100G here, so a bare `=4@100G` asks about the
+spines as well as the leaves and answers no: eight links do not fit four
+ports. `:leaf` and `:spine` say which switches each question is about, and
+the spine's whole front panel is the thing to check, since the option costs
+it ordinary ports rather than ports at some particular speed:
 
 ```
-$ fabrictool 8 +4 @100G -48@25G =32@400G =4@100G =2@200G =48@25G
+$ fabrictool 8 +4 @100G -48@25G =32:spine =4@100G:leaf =2@200G:leaf =48@25G:leaf
 8 leaves + 4 spines  -  leaf-spine at 100G
 
   Switches       12  (8 leaves, 4 spines)
@@ -1102,18 +1108,18 @@ Oversubscription
   One spine down 4:1  (300G of fabric left on each leaf)
   Servers        384 x 25G  (9.6T attached in total)
 
-400G ports on a 32-port switch
-  yes - nothing in this plan uses a port at 400G
+Ports on a 32-port spine
+  yes - it fits
+  each spine  8 of 32 ports at 100G, 24 spare
 
-100G ports on a 4-port switch
-  no - each spine is 4 short
-  each spine  8 of 4 ports at 100G, 4 short
-  each leaf   4 of 4 ports at 100G, 0 spare
+100G ports on a 4-port leaf
+  yes - it fits
+  each leaf  4 of 4 ports at 100G, 0 spare
 
-200G ports on a 2-port switch
-  yes - nothing in this plan uses a port at 200G
+200G ports on a 2-port leaf
+  yes - each leaf uses no port at 200G
 
-25G ports on a 48-port switch
+25G ports on a 48-port leaf
   yes - it fits
   each leaf  48 of 48 ports at 25G, 0 spare
 ```
@@ -1277,7 +1283,7 @@ That is the answer: **200G to every spine does not fit these leaves**, and the
 tool says which port ran out rather than leaving it to be noticed. Under
 `--quiet` that is exit 4, so a script comparing options can just ask.
 
-What the numbers come to, for the three that do fit:
+The three that do fit come to this:
 
 | | Spine ports | Spine optics | Leaf optics | Cables | Per leaf |
 | --- | --- | --- | --- | --- | --- |
