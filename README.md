@@ -2,21 +2,18 @@
 
 [![CI](https://github.com/jiphex/network-prefix-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/jiphex/network-prefix-cli/actions/workflows/ci.yml)
 
-Two CLIs for the two things you end up doing on a whiteboard before anything
-gets built.
+Two CLIs for the two calculations that precede a build.
 
-**`prefixtool`** inspects, splits and carves up IPv4 and IPv6 prefixes. Built
-for the moment you are staring at an allocation and need to know how it
-divides, what fits inside it, and what is left over afterwards.
+**`prefixtool`** inspects, splits and carves up IPv4 and IPv6 prefixes: how an
+allocation divides, what fits inside it, and what is left over afterwards.
 
-**`fabrictool`** sizes the cabling between switches. Built for the moment you
-are staring at a rack diagram and need to know how many cables, transceivers
-and ports a mesh of eight of them actually costs, whether breaking a 400G port
-into four 100G lanes makes that better or worse, and what the whole thing is
-oversubscribed by once the servers are plugged in.
+**`fabrictool`** sizes the cabling between switches: the cables, transceivers
+and ports a mesh of eight costs, the difference a 400G port split into four
+100G lanes makes to that, and the oversubscription the result runs at once the
+servers are connected.
 
-They ship together, in one archive, and read the same way: a thing to work on,
-then operators for the questions you want answered about it.
+The two ship together in one archive and read the same way: a thing to work
+on, then operators for the questions about it.
 
 ## Install
 
@@ -608,13 +605,15 @@ links, ports and cables; each operator adds something more it can say.
 | `%M` | Break each switch port into `M` lanes |
 | `%SPEED` | The same, worked out from the port speed instead of counted |
 | `xK`, `*K` | `K` parallel links between each pair |
-| `/SHAPE` | `/mesh` (the default), `/ring`, `/star` or `/leaf-spine` |
 | `+S` | `S` spines above the leaves, which makes it a leaf-spine (a pair, by default) |
 | `-N@SPEED` | `N` server ports on each leaf, at that speed |
 | `-N@SPEED%P` | The same, out of `P` ports split into lanes to reach them |
 | `=N` | Each switch has `N` ports - does the plan fit? |
 | `=N@SPEED` | The same, about the `N` ports it has at one speed |
-| `.` | The patch schedule: which port on which switch reaches which |
+
+An operator carries a number, a speed or both. A choice from a fixed list -
+the shape of the fabric, what its links are made of - is a flag instead, so
+there is one rule for which is which rather than a sigil to remember for each.
 
 A bare number after `%` is a lane count and a number with a unit is a port
 speed, so `%4` and `%400G` are different questions and neither has to be
@@ -625,11 +624,14 @@ tries to glob the `*`. Flags and operators can be given in any order.
 
 | Flag | Meaning |
 | --- | --- |
+| `--shape <shape>` | `mesh` (default), `ring`, `star` or `leaf-spine` |
+| `--media <kind>` | What the links are made of: `optic` (default), `aoc` or `dac` |
+| `--schedule` | Print the patch schedule: which port on which switch reaches which |
 | `-n`, `--limit <N>` | Links to list in the patch schedule (default 8) |
 | `-a`, `--all` | List every link, however many there are |
-| `--media <kind>` | What the links are made of: `optic` (default), `aoc` or `dac` |
 | `-q`, `--quiet` | Print the bill of materials only, one item per line |
 | `--json` | Emit a JSON object instead of a report |
+| `--dot` | Emit a Graphviz DOT graph of the fabric |
 | `--color <when>` | `auto` (default), `always` or `never` |
 
 ### Exit status
@@ -648,9 +650,9 @@ as a confident no.
 
 ### Counting a mesh
 
-A full mesh is the shape whose cable count people get wrong, because it grows
-with the square of the switch count rather than with the switch count. Eight
-of them is twenty-eight links and fifty-six transceivers:
+A full mesh is the shape whose cable count is most often miscalculated,
+because it grows with the square of the switch count rather than with the
+switch count. Eight of them is twenty-eight links and fifty-six transceivers:
 
 ```
 $ fabrictool 8 @100G
@@ -665,13 +667,14 @@ $ fabrictool 8 @100G
   Ports          7 x 100G on each switch
   Bisection      1.6T  (16 links across the middle)
   Fabric total   2.8T  (28 x 100G, one direction)
-  Hops           1  (worst case, switch to switch)
+  Hops           1  (every switch reaches every other directly)
   Resilience     6 links may fail before the fabric splits
 
 Cabling 8 switches at 100G
   Arrangement    one 100G cable per link, a transceiver in each end
 
   Qty  Item                     Where
+  ---  -----------------------  -----------------------------
    56  100G transceiver         one in each end of every link
    28  duplex fibre patch lead  one per link
    56  100G switch port         7 ports on each of 8 switches
@@ -685,10 +688,10 @@ other. **Hops** is the worst case, switch to switch.
 
 ### Breaking a port out
 
-Nobody buys 100G switches to build that mesh any more. They buy 400G ports and
-split each one into four 100G lanes, each lane going to a different peer. `%`
-says so, either as a lane count (`%4`) or as the port speed to work it out
-from (`%400G`):
+That mesh is often built out of faster ports instead, with each 400G port
+split into four 100G lanes and each lane going to a different peer. `%` says
+so, either as a lane count (`%4`) or as the port speed to work it out from
+(`%400G`):
 
 ```
 $ fabrictool 8 @100G %400G
@@ -703,7 +706,7 @@ $ fabrictool 8 @100G %400G
   Ports          2 x 400G on each switch  (4 lanes each: 7 used, 1 spare)
   Bisection      1.6T  (16 links across the middle)
   Fabric total   2.8T  (28 x 100G, one direction)
-  Hops           1  (worst case, switch to switch)
+  Hops           1  (every switch reaches every other directly)
   Resilience     6 links may fail before the fabric splits
 
 Cabling 8 switches at 100G
@@ -711,6 +714,7 @@ Cabling 8 switches at 100G
   Trunk ports    16  (64 lanes, 56 used, 8 spare)
 
   Qty  Item                             Where
+  ---  -------------------------------  -----------------------------------------------------------
    16  400G transceiver                 one in each trunk port
    16  400G to 4x100G breakout harness  one per trunk port, its lanes fanned out to that many peers
    28  duplex coupler                   one per link, where its two lanes meet in the patch field
@@ -727,15 +731,15 @@ four.
 ### Splitters, and where they can go
 
 A DAC or AOC splitter is one assembly with its ends moulded on, so its lanes
-have to land in ports that run at the lane speed. That is a star: the hub
+have to plug into ports that run at the lane speed. That is a star: the hub
 breaks out, and each spoke gives up a whole port.
 
 ```
-$ fabrictool 48 /star @25G %100G --media=dac
+$ fabrictool 48 --shape=star @25G %100G --media=dac
 48 switches  -  star at 25G
 
   Switches       48
-  Topology       star  (one hub, everything else hanging off it)
+  Topology       star  (one hub, everything else connected to it)
   Links          47  (1 link from the hub to each spoke)
   Link speed     25G
   Per spoke      25G
@@ -745,7 +749,7 @@ $ fabrictool 48 /star @25G %100G --media=dac
                  1 x 25G on each spoke
   Bisection      600G  (24 links across the middle)
   Fabric total   1.175T  (47 x 25G, one direction)
-  Hops           2  (worst case, switch to switch)
+  Hops           2  (spoke to hub to spoke)
   Resilience     any single link failure splits the fabric
 
 Cabling 48 switches at 25G
@@ -753,6 +757,7 @@ Cabling 48 switches at 25G
   Hub ports      12  (48 lanes, 47 used, 1 spare)
 
   Qty  Item                        Where
+  ---  --------------------------  --------------------------------------------
    12  100G to 4x25G DAC splitter  one per hub port, a lane to each of 4 spokes
    12  100G hub port               12 ports on the hub
    47  25G spoke port              1 port on each of 47 spokes
@@ -774,20 +779,20 @@ splitter at one end only with /star or /leaf-spine
 
 ### Other shapes, and whether they fit
 
-`/ring`, `/star` and `/leaf-spine` cost far fewer cables than a mesh, and the
-report says what that buys and what it costs: a ring of twenty-four is two
-links across the middle and twelve hops from one side to the other, however
-fast each link is.
+`--shape=ring`, `--shape=star` and `--shape=leaf-spine` cost far fewer cables
+than a mesh, and the report says what that buys and what it costs: a ring of
+twenty-four is two links across the middle and twelve hops from one side to
+the other, however fast each link is.
 
 `=N` asks the question that decides whether any of this is orderable - the
 switches have `N` ports, so does the plan fit in them?
 
 ```
-$ fabrictool 48 /star @25G %100G =32
+$ fabrictool 48 --shape=star @25G %100G =32
 48 switches  -  star at 25G
 
   Switches       48
-  Topology       star  (one hub, everything else hanging off it)
+  Topology       star  (one hub, everything else connected to it)
   Links          47  (1 link from the hub to each spoke)
   Link speed     25G
   Per spoke      25G
@@ -797,7 +802,7 @@ $ fabrictool 48 /star @25G %100G =32
                  1 x 25G on each spoke
   Bisection      600G  (24 links across the middle)
   Fabric total   1.175T  (47 x 25G, one direction)
-  Hops           2  (worst case, switch to switch)
+  Hops           2  (spoke to hub to spoke)
   Resilience     any single link failure splits the fabric
 
 Cabling 48 switches at 25G
@@ -805,6 +810,7 @@ Cabling 48 switches at 25G
   Hub ports      12  (48 lanes, 47 used, 1 spare)
 
   Qty  Item                            Where
+  ---  ------------------------------  --------------------------------------
    12  100G transceiver                one in each hub port
    12  100G to 4x25G breakout harness  one per hub port, a lane to each spoke
    47  25G transceiver                 one in each spoke port
@@ -822,10 +828,10 @@ separately. The hub is the one that runs out.
 
 ### Leaf-spine, servers, and oversubscription
 
-The shape most of this actually gets built in. `+2` puts two spines above the
-leaves - saying how many spines there are is what makes it a leaf-spine, and a
-pair is what `/leaf-spine` means on its own, because that is how a rack gets
-built. `-48@25G` says what is plugged into each leaf:
+The shape most of this gets built in. `+2` puts two spines above the leaves -
+saying how many spines there are is what makes it a leaf-spine, and a pair is
+what `--shape=leaf-spine` means on its own, because that is how a rack gets
+built. `-48@25G` says what is connected to each leaf:
 
 ```
 $ fabrictool 16 +2 @100G %400G -48@25G
@@ -843,7 +849,7 @@ $ fabrictool 16 +2 @100G %400G -48@25G
   Server ports   48 x 25G on each leaf
   Bisection      1.6T  (16 links across the middle)
   Fabric total   3.2T  (32 x 100G, one direction)
-  Hops           2  (worst case, switch to switch)
+  Hops           2  (leaf to spine to leaf)
   Resilience     1 link may fail before the fabric splits
   Spine loss     each leaf keeps 1 uplink of 2  (100G of 200G)
 
@@ -852,6 +858,7 @@ Cabling 16 leaves + 2 spines at 100G
   Spine ports    8  (32 lanes, 32 used, 0 spare)
 
   Qty  Item                             Where
+  ---  -------------------------------  -----------------------------------------------
     8  400G transceiver                 one in each spine port
     8  400G to 4x100G breakout harness  one per spine port, a lane to each leaf
    32  100G transceiver                 one in each leaf port
@@ -908,7 +915,7 @@ $ fabrictool 2 +2 @100G -48@25G
   Server ports   48 x 25G on each leaf
   Bisection      200G  (2 links across the middle)
   Fabric total   400G  (4 x 100G, one direction)
-  Hops           2  (worst case, switch to switch)
+  Hops           2  (leaf to spine to leaf)
   Resilience     1 link may fail before the fabric splits
   Spine loss     each leaf keeps 1 uplink of 2  (100G of 200G)
 
@@ -916,6 +923,7 @@ Cabling 2 leaves + 2 spines at 100G
   Arrangement    one 100G cable per link, a transceiver in each end
 
   Qty  Item                     Where
+  ---  -----------------------  ----------------------------------------------
     8  100G transceiver         one in each end of every link
     4  duplex fibre patch lead  one per link
     4  100G spine port          2 ports on each of 2 spines
@@ -950,7 +958,7 @@ $ fabrictool 32 +4 @100G %400G -48@25G =56
   Server ports   48 x 25G on each leaf
   Bisection      6.4T  (64 links across the middle)
   Fabric total   12.8T  (128 x 100G, one direction)
-  Hops           2  (worst case, switch to switch)
+  Hops           2  (leaf to spine to leaf)
   Resilience     3 links may fail before the fabric splits
   Spine loss     each leaf keeps 3 uplinks of 4  (300G of 400G)
 
@@ -959,6 +967,7 @@ Cabling 32 leaves + 4 spines at 100G
   Spine ports    32  (128 lanes, 128 used, 0 spare)
 
     Qty  Item                             Where
+  -----  -------------------------------  -----------------------------------------------
      32  400G transceiver                 one in each spine port
      32  400G to 4x100G breakout harness  one per spine port, a lane to each leaf
     128  100G transceiver                 one in each leaf port
@@ -990,12 +999,19 @@ ports, and the full mesh between leaf and spine has to hold: every leaf on
 every spine, which is 32 links however they are made.
 
 The leaf's front panel is the constraint, so state it once and reuse it.
-`=N@SPEED` asks about the ports at one speed, which is how the switch is
+`=N@SPEED` asks about the ports at one speed, which is how a switch is
 actually specified:
 
 ```
 profile="=32@400G =4@100G =2@200G =48@25G"
 ```
+
+Nothing in that says which switch is which, and nothing has to: each question
+is answered by whichever switches have ports at that speed, and the answer
+names them. `=32@400G` is about the spines because the spines are what has
+400G ports; `=4@100G` and `=48@25G` are about the leaves for the same reason.
+A speed no switch runs at is answered as such rather than counted as a fit,
+so a profile that does not match the plan says so instead of passing quietly.
 
 **One 100G link per spine port.** The simplest cabling: a 100G transceiver at
 each end and a fibre between them, no breakout and no patch field. It costs
@@ -1017,7 +1033,7 @@ $ fabrictool 8 +4 @100G -48@25G =32@400G =4@100G =2@200G =48@25G
   Server ports   48 x 25G on each leaf
   Bisection      1.6T  (16 links across the middle)
   Fabric total   3.2T  (32 x 100G, one direction)
-  Hops           2  (worst case, switch to switch)
+  Hops           2  (leaf to spine to leaf)
   Resilience     3 links may fail before the fabric splits
   Spine loss     each leaf keeps 3 uplinks of 4  (300G of 400G)
 
@@ -1025,6 +1041,7 @@ Cabling 8 leaves + 4 spines at 100G
   Arrangement    one 100G cable per link, a transceiver in each end
 
   Qty  Item                     Where
+  ---  -----------------------  ----------------------------------------------
    64  100G transceiver         one in each end of every link
    32  duplex fibre patch lead  one per link
    32  100G spine port          8 ports on each of 4 spines
@@ -1072,7 +1089,7 @@ $ fabrictool 8 +4 @100G %400G -48@25G =32@400G =4@100G =2@200G =48@25G
   Server ports   48 x 25G on each leaf
   Bisection      1.6T  (16 links across the middle)
   Fabric total   3.2T  (32 x 100G, one direction)
-  Hops           2  (worst case, switch to switch)
+  Hops           2  (leaf to spine to leaf)
   Resilience     3 links may fail before the fabric splits
   Spine loss     each leaf keeps 3 uplinks of 4  (300G of 400G)
 
@@ -1081,6 +1098,7 @@ Cabling 8 leaves + 4 spines at 100G
   Spine ports    8  (32 lanes, 32 used, 0 spare)
 
   Qty  Item                             Where
+  ---  -------------------------------  ----------------------------------------------
     8  400G transceiver                 one in each spine port
     8  400G to 4x100G breakout harness  one per spine port, a lane to each leaf
    32  100G transceiver                 one in each leaf port
@@ -1129,7 +1147,7 @@ $ fabrictool 8 +4 @100G %400G -48@25G --media=aoc
   Server ports   48 x 25G on each leaf
   Bisection      1.6T  (16 links across the middle)
   Fabric total   3.2T  (32 x 100G, one direction)
-  Hops           2  (worst case, switch to switch)
+  Hops           2  (leaf to spine to leaf)
   Resilience     3 links may fail before the fabric splits
   Spine loss     each leaf keeps 3 uplinks of 4  (300G of 400G)
 
@@ -1138,6 +1156,7 @@ Cabling 8 leaves + 4 spines at 100G
   Spine ports    8  (32 lanes, 32 used, 0 spare)
 
   Qty  Item                         Where
+  ---  ---------------------------  ----------------------------------------------
     8  400G to 4x100G AOC splitter  one per spine port, a lane to each of 4 leaves
     8  400G spine port              2 ports on each of 4 spines
    32  100G leaf port               4 ports on each of 8 leaves
@@ -1169,7 +1188,7 @@ $ fabrictool 8 +4 @200G %400G -48@25G =32@400G =4@100G =2@200G =48@25G
   Server ports   48 x 25G on each leaf
   Bisection      3.2T  (16 links across the middle)
   Fabric total   6.4T  (32 x 200G, one direction)
-  Hops           2  (worst case, switch to switch)
+  Hops           2  (leaf to spine to leaf)
   Resilience     3 links may fail before the fabric splits
   Spine loss     each leaf keeps 3 uplinks of 4  (600G of 800G)
 
@@ -1178,6 +1197,7 @@ Cabling 8 leaves + 4 spines at 200G
   Spine ports    16  (32 lanes, 32 used, 0 spare)
 
   Qty  Item                             Where
+  ---  -------------------------------  ----------------------------------------------
    16  400G transceiver                 one in each spine port
    16  400G to 2x200G breakout harness  one per spine port, a lane to each leaf
    32  200G transceiver                 one in each leaf port
@@ -1240,10 +1260,11 @@ together.
 
 ### The patch schedule
 
-`.` prints what to take to the rack, in `sw<switch>:<port>/<lane>`:
+`--schedule` prints what to take to the rack, in `sw<switch>:<port>/<lane>`,
+or `spine1:1/1` and `leaf3:2` where the switches have different jobs:
 
 ```
-$ fabrictool 8 @100G %400G . -n 6
+$ fabrictool 8 @100G %400G --schedule -n 6
 8 switches  -  full mesh at 100G
 
   Switches       8
@@ -1255,7 +1276,7 @@ $ fabrictool 8 @100G %400G . -n 6
   Ports          2 x 400G on each switch  (4 lanes each: 7 used, 1 spare)
   Bisection      1.6T  (16 links across the middle)
   Fabric total   2.8T  (28 x 100G, one direction)
-  Hops           1  (worst case, switch to switch)
+  Hops           1  (every switch reaches every other directly)
   Resilience     6 links may fail before the fabric splits
 
 Cabling 8 switches at 100G
@@ -1263,6 +1284,7 @@ Cabling 8 switches at 100G
   Trunk ports    16  (64 lanes, 56 used, 8 spare)
 
   Qty  Item                             Where
+  ---  -------------------------------  -----------------------------------------------------------
    16  400G transceiver                 one in each trunk port
    16  400G to 4x100G breakout harness  one per trunk port, its lanes fanned out to that many peers
    28  duplex coupler                   one per link, where its two lanes meet in the patch field
@@ -1285,6 +1307,78 @@ people cabling from the same schedule wire the same fabric. `--all` prints
 every link, and the list stays lazy - piping a large one into `head` returns
 immediately.
 
+A list of cables is the wrong shape for checking that a fabric is wired the
+way it was meant to be. `--dot --schedule` draws the same links instead, which
+is the next section.
+
+### Drawing it
+
+The report counts a fabric and the schedule lists its cables; neither shows
+its shape. `--dot` emits a Graphviz graph, which does:
+
+```
+$ fabrictool 4 +2 @100G %400G -48@25G --dot | dot -Tpng > fabric.png
+```
+
+```
+// fabrictool: 4 leaves + 2 spines - leaf-spine at 100G
+graph fabric {
+  graph [rankdir=TB, labelloc=t, fontname="Helvetica", label="4 leaves + 2 spines - leaf-spine at 100G"];
+  node [shape=box, style=rounded, fontname="Helvetica", fontsize=11];
+  edge [fontname="Helvetica", fontsize=9];
+
+  subgraph cluster_spine {
+    label="2 spines"; style=dashed; color="#999999"; fontsize=10;
+    spine1 [label="spine1\n1 x 400G (4 lanes each)"];
+    spine2 [label="spine2\n1 x 400G (4 lanes each)"];
+  }
+
+  subgraph cluster_leaf {
+    label="4 leaves"; style=dashed; color="#999999"; fontsize=10;
+    leaf1 [label="leaf1\n2 x 100G\n48 x 25G servers"];
+    leaf2 [label="leaf2\n2 x 100G\n48 x 25G servers"];
+    leaf3 [label="leaf3\n2 x 100G\n48 x 25G servers"];
+    leaf4 [label="leaf4\n2 x 100G\n48 x 25G servers"];
+  }
+
+  spine1 -- leaf1 [label="100G"];
+  spine1 -- leaf2 [label="100G"];
+  spine1 -- leaf3 [label="100G"];
+  spine1 -- leaf4 [label="100G"];
+  spine2 -- leaf1 [label="100G"];
+  spine2 -- leaf2 [label="100G"];
+  spine2 -- leaf3 [label="100G"];
+  spine2 -- leaf4 [label="100G"];
+}
+```
+
+Switches of different jobs are drawn as separate ranks, each node labelled
+with what that switch gives up - its fabric ports, the lanes inside them, and
+the servers under it. One edge per pair of switches, labelled with what runs
+between them, because the shape rather than the individual cables is the point
+of a picture.
+
+Adding `--schedule` draws a cable at a time instead, each edge labelled with
+the ports at its two ends, which is the same list `--schedule` prints and
+easier to check against a rack:
+
+```
+$ fabrictool 4 +2 @100G %400G --dot --schedule
+...
+  spine1 -- leaf1 [label="spine1:1/1 - leaf1:1"];
+  spine1 -- leaf2 [label="spine1:1/2 - leaf2:1"];
+  spine1 -- leaf3 [label="spine1:1/3 - leaf3:1"];
+  spine1 -- leaf4 [label="spine1:1/4 - leaf4:1"];
+  spine2 -- leaf1 [label="spine2:1/1 - leaf1:2"];
+  spine2 -- leaf2 [label="spine2:1/2 - leaf2:2"];
+  spine2 -- leaf3 [label="spine2:1/3 - leaf3:2"];
+  spine2 -- leaf4 [label="spine2:1/4 - leaf4:2"];
+```
+
+A mesh of a few hundred switches makes a graph Graphviz will struggle to lay
+out, which is a property of the fabric rather than of the tool; `neato` or
+`sfdp` handle a large one better than `dot` does.
+
 ### Scripting
 
 `--quiet` prints the bill of materials, one item per line, as a quantity and a
@@ -1298,11 +1392,11 @@ $ fabrictool 8 @100G %400G -q
 16	port-switch-400G
 ```
 
-With `.` it prints the schedule instead, one link per line, since that is what
-was asked for:
+With `--schedule` it prints the schedule instead, one link per line, since
+that is what was asked for:
 
 ```
-$ fabrictool 4 . -q
+$ fabrictool 4 --schedule -q
 sw1:1 sw2:1
 sw1:2 sw3:1
 sw1:3 sw4:1

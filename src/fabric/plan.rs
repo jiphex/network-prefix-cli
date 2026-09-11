@@ -308,7 +308,18 @@ pub struct Report {
     pub schedule: bool,
 }
 
-pub fn build(switches: u64, ops: &[Op], media: Media) -> Result<Report, Problem> {
+/// What the flags say, as against what the operators do: the shape of the
+/// fabric, what its links are made of, and whether a patch schedule was
+/// asked for. These are choices from a fixed list rather than numbers, which
+/// is what makes them flags.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Options {
+    pub media: Media,
+    pub shape: Option<Topology>,
+    pub schedule: bool,
+}
+
+pub fn build(switches: u64, ops: &[Op], opts: Options) -> Result<Report, Problem> {
     if switches < 2 {
         return Err(Problem::Input(format!(
             "{switches} switch{} is not a fabric: there has to be something to connect it to",
@@ -321,14 +332,14 @@ pub fn build(switches: u64, ops: &[Op], media: Media) -> Result<Report, Problem>
         )));
     }
 
-    let mut topology = None;
+    let topology = opts.shape;
     let mut speed = None;
     let mut per_pair = None;
     let mut breakout = None;
     let mut spines = None;
     let mut access = None;
     let mut budgets = Vec::new();
-    let mut schedule = false;
+    let schedule = opts.schedule;
 
     // A scalar given twice is a question with two answers, so it is an error
     // rather than a race between them.
@@ -337,11 +348,9 @@ pub fn build(switches: u64, ops: &[Op], media: Media) -> Result<Report, Problem>
             Op::Speed(s) => set_once(&mut speed, *s, "a link speed")?,
             Op::Breakout(b) => set_once(&mut breakout, *b, "a breakout")?,
             Op::PerPair(n) => set_once(&mut per_pair, u64::from(*n), "a links-per-pair")?,
-            Op::Shape(t) => set_once(&mut topology, *t, "a topology")?,
             Op::Spines(n) => set_once(&mut spines, u64::from(*n), "a spine count")?,
             Op::Access(a) => set_once(&mut access, *a, "a server port count")?,
             Op::Budget(b) => budgets.push(*b),
-            Op::Schedule => schedule = true,
         }
     }
 
@@ -351,7 +360,7 @@ pub fn build(switches: u64, ops: &[Op], media: Media) -> Result<Report, Problem>
     let topology = match (topology, spines) {
         (Some(t), Some(_)) if t != Topology::LeafSpine => {
             return Err(Problem::Input(format!(
-                "a {t} has no spines: drop the +, or ask for a /leaf-spine"
+                "a {t} has no spines: drop the +, or ask for --shape=leaf-spine"
             )));
         }
         (Some(t), _) => t,
@@ -385,7 +394,7 @@ pub fn build(switches: u64, ops: &[Op], media: Media) -> Result<Report, Problem>
         spines,
         per_pair,
     };
-    let plan = plan(shape, speed, breakout, access, media)?;
+    let plan = plan(shape, speed, breakout, access, opts.media)?;
     let budgets = budgets.into_iter().map(|n| budget(&plan, n)).collect();
     Ok(Report {
         plan,
@@ -559,14 +568,14 @@ fn plan(
 
     // A splitter's lanes end in modules, and a module needs a port to go in.
     // Where every switch is identical there is no port running at the lane
-    // speed for it to land in, so the lanes have to meet each other, and only
+    // speed for it to plug into, so the lanes have to meet each other, and only
     // fibre does that.
     if arrangement == Arrangement::SplitBothEnds && !media.has_transceivers() {
         return Err(Problem::Impossible(format!(
             "a {}-lane {} splitter ends in modules, and in a {} every switch has the same \
              ports, so there is nothing at {} for those modules to plug into. Use \
              --media=optic and join the lanes in a patch field, or put the splitter at one \
-             end only with /star or /leaf-spine",
+             end only with --shape=star or --shape=leaf-spine",
             lanes,
             media,
             topology,
@@ -944,14 +953,45 @@ mod tests {
             .collect()
     }
 
+    /// The tests say the shape the way the command line used to, because it
+    /// reads better in a list of cases than a separate argument does.
+    fn options<'a>(args: &[&'a str], media: Media) -> (Vec<&'a str>, Options) {
+        let mut opts = Options {
+            media,
+            ..Options::default()
+        };
+        let rest = args
+            .iter()
+            .filter(|a| match a.strip_prefix('/') {
+                Some(shape) => {
+                    opts.shape = Some(
+                        <Topology as clap::ValueEnum>::from_str(&shape.to_ascii_lowercase(), true)
+                            .expect("a shape"),
+                    );
+                    false
+                }
+                None => true,
+            })
+            .copied()
+            .collect();
+        (rest, opts)
+    }
+
+    /// `build` as the tests want it: the shape written inline as `/star`,
+    /// which is where it used to live on the command line.
+    fn built(switches: u64, args: &[&str], media: Media) -> Result<Report, Problem> {
+        let (rest, opts) = options(args, media);
+        build(switches, &ops(&rest), opts)
+    }
+
     fn plan_of(switches: u64, args: &[&str]) -> Plan {
-        build(switches, &ops(args), Media::Optic)
-            .expect("plans")
-            .plan
+        let (rest, opts) = options(args, Media::Optic);
+        build(switches, &ops(&rest), opts).expect("plans").plan
     }
 
     fn fails(switches: u64, args: &[&str], media: Media) -> Problem {
-        build(switches, &ops(args), media).expect_err("should not plan")
+        let (rest, opts) = options(args, media);
+        build(switches, &ops(&rest), opts).expect_err("should not plan")
     }
 
     #[test]
@@ -1082,9 +1122,9 @@ mod tests {
         // to plug into. That is a buildability problem, not a typo.
         let e = fails(8, &["@100G", "%400G"], Media::Dac);
         assert!(matches!(e, Problem::Impossible(_)), "{e:?}");
-        assert!(e.to_string().contains("/star"));
+        assert!(e.to_string().contains("--shape=star"));
         // The same splitter into a star's spokes is exactly what it is for.
-        let p = build(8, &ops(&["@100G", "%400G", "/star"]), Media::Dac)
+        let p = built(8, &["@100G", "%400G", "/star"], Media::Dac)
             .expect("plans")
             .plan;
         assert_eq!(p.arrangement, Arrangement::SplitUpstream);
@@ -1094,7 +1134,7 @@ mod tests {
     #[test]
     fn straight_cables_do_not_care_about_media() {
         for media in [Media::Optic, Media::Aoc, Media::Dac] {
-            let p = build(8, &ops(&["@100G"]), media).expect("plans").plan;
+            let p = built(8, &["@100G"], media).expect("plans").plan;
             assert_eq!(p.arrangement, Arrangement::Straight);
             assert_eq!(p.lanes, 1);
             assert_eq!(p.spare_lanes, 0);
@@ -1250,8 +1290,8 @@ mod tests {
         assert_eq!((p.sides[1].ports, p.sides[1].lanes), (2, 1));
         assert_eq!(p.sides[1].port_speed, Some(speed::parse("100G").unwrap()));
         assert_eq!(p.trunk_ports, 8);
-        // A splitter is fine here: its lanes land in whole leaf ports.
-        assert!(build(16, &ops(&["+2", "@100G", "%400G"]), Media::Dac).is_ok());
+        // A splitter is fine here: its lanes plug into whole leaf ports.
+        assert!(built(16, &["+2", "@100G", "%400G"], Media::Dac).is_ok());
     }
 
     #[test]
@@ -1360,10 +1400,14 @@ mod tests {
     /// plan fits one.
     #[test]
     fn a_budget_can_ask_about_one_kind_of_port() {
-        let ops = ops(&[
-            "+4", "@100G", "%400G", "-48@25G", "=32@400G", "=4@100G", "=48@25G", "=2@200G",
-        ]);
-        let r = build(8, &ops, Media::Optic).expect("plans");
+        let r = built(
+            8,
+            &[
+                "+4", "@100G", "%400G", "-48@25G", "=32@400G", "=4@100G", "=48@25G", "=2@200G",
+            ],
+            Media::Optic,
+        )
+        .expect("plans");
         let [spine_400, leaf_100, leaf_25, none_200] = &r.budgets[..] else {
             panic!("four budgets, got {}", r.budgets.len());
         };
@@ -1390,9 +1434,9 @@ mod tests {
     #[test]
     fn a_port_speed_the_plan_cannot_reach_is_reported_short() {
         // Four spines at 200G needs four 200G ports on a leaf that has two.
-        let r = build(
+        let r = built(
             8,
-            &ops(&["+4", "@200G", "%400G", "-48@25G", "=2@200G"]),
+            &["+4", "@200G", "%400G", "-48@25G", "=2@200G"],
             Media::Optic,
         )
         .expect("plans");
@@ -1404,12 +1448,12 @@ mod tests {
 
     #[test]
     fn a_budget_is_checked_against_every_kind_of_switch() {
-        let r = build(8, &ops(&["@100G", "%400G", "=32"]), Media::Optic).unwrap();
+        let r = built(8, &["@100G", "%400G", "=32"], Media::Optic).unwrap();
         assert!(r.budgets[0].fits());
         assert_eq!(r.budgets[0].sides[0].spare, 30);
 
         // A star's hub runs out long before its spokes do.
-        let r = build(48, &ops(&["@100G", "/star", "=32"]), Media::Optic).unwrap();
+        let r = built(48, &["@100G", "/star", "=32"], Media::Optic).unwrap();
         assert!(!r.budgets[0].fits());
         assert_eq!(r.budgets[0].sides[0].short, 15);
         assert_eq!(r.budgets[0].sides[1].short, 0);
@@ -1419,21 +1463,21 @@ mod tests {
     fn a_fabric_needs_at_least_two_switches() {
         for n in [0, 1] {
             assert!(matches!(
-                build(n, &[], Media::Optic),
+                built(n, &[], Media::Optic),
                 Err(Problem::Input(_))
             ));
         }
-        assert!(build(2, &[], Media::Optic).is_ok());
+        assert!(built(2, &[], Media::Optic).is_ok());
     }
 
     #[test]
     fn absurd_sizes_are_refused_rather_than_attempted() {
         assert!(matches!(
-            build(MAX_SWITCHES + 1, &[], Media::Optic),
+            built(MAX_SWITCHES + 1, &[], Media::Optic),
             Err(Problem::Input(_))
         ));
         assert!(matches!(
-            build(8, &ops(&["x65"]), Media::Optic),
+            built(8, &["x65"], Media::Optic),
             Err(Problem::Input(_))
         ));
         // The largest fabric this will plan still fits the arithmetic.
@@ -1443,19 +1487,22 @@ mod tests {
 
     #[test]
     fn a_scalar_given_twice_is_an_error_rather_than_a_race() {
+        // The shape is not in this list: it is a flag now, and a flag given
+        // twice is clap's business rather than ours.
         for args in [
             vec!["@100G", "@400G"],
             vec!["%4", "%8"],
             vec!["x2", "x4"],
-            vec!["/ring", "/star"],
+            vec!["+2", "+4"],
+            vec!["-24@10G", "-48@25G"],
         ] {
             assert!(
-                matches!(build(8, &ops(&args), Media::Optic), Err(Problem::Input(_))),
+                matches!(built(8, &args, Media::Optic), Err(Problem::Input(_))),
                 "{args:?}"
             );
         }
         // Questions are not scalars: two budgets are two questions.
-        let r = build(8, &ops(&["=32", "=16"]), Media::Optic).unwrap();
+        let r = built(8, &["=32", "=16"], Media::Optic).unwrap();
         assert_eq!(r.budgets.len(), 2);
     }
 

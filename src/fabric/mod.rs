@@ -15,7 +15,9 @@
 //! | `plan.rs` | Topology, ports, cables and bandwidth |
 //! | `schedule.rs` | Which port on which switch reaches which |
 //! | `render.rs` | Text, `--quiet` and `--json` output |
+//! | `dot.rs` | A Graphviz drawing of the fabric |
 
+pub mod dot;
 pub mod ops;
 pub mod plan;
 pub mod render;
@@ -25,18 +27,22 @@ pub mod speed;
 use std::fmt;
 
 /// How the switches are wired to each other.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum Topology {
-    /// Every switch to every other. The default, because it is the one whose
-    /// cable count people get wrong.
+    /// Every switch to every other. The default, because it is the shape
+    /// whose cable count is most often miscalculated.
     #[default]
+    #[value(alias = "full", alias = "full-mesh")]
     Mesh,
     /// Each switch to two neighbours, closing back on itself.
+    #[value(alias = "loop")]
     Ring,
-    /// One switch in the middle, everything else hanging off it.
+    /// One switch in the middle, everything else connected to it.
+    #[value(alias = "hub", alias = "hub-and-spoke")]
     Star,
     /// Every leaf to every spine, and nothing to anything else. The shape a
     /// rack of switches with servers under them actually has.
+    #[value(alias = "clos", alias = "spine-leaf")]
     LeafSpine,
 }
 
@@ -56,20 +62,8 @@ impl Topology {
         match self {
             Topology::Mesh => "every switch to every other",
             Topology::Ring => "each switch to two neighbours",
-            Topology::Star => "one hub, everything else hanging off it",
+            Topology::Star => "one hub, everything else connected to it",
             Topology::LeafSpine => "every leaf to every spine",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Topology> {
-        match s.to_ascii_lowercase().as_str() {
-            "mesh" | "full-mesh" | "fullmesh" | "full" => Some(Topology::Mesh),
-            "ring" | "loop" => Some(Topology::Ring),
-            "star" | "hub" | "hub-and-spoke" => Some(Topology::Star),
-            "leaf-spine" | "leafspine" | "spine-leaf" | "clos" | "spine" => {
-                Some(Topology::LeafSpine)
-            }
-            _ => None,
         }
     }
 }

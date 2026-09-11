@@ -6,14 +6,17 @@
 //!   %4        break each switch port into 4 lanes
 //!   %400G     the same, worked out from the port speed instead
 //!   x2        two parallel links between each pair (*2 is the same thing)
-//!   /ring     the shape: /mesh, /ring, /star or /leaf-spine
 //!   +2        two spines above the leaves, which makes it a leaf-spine
 //!   -48@25G   48 server ports on each leaf, at 25G
 //!   -48@25G%100G  the same, out of 100G ports split four ways
 //!   =32       each switch has 32 ports - does this fit?
 //!   =4@100G   the same, about the four ports it has at one speed
-//!   .         the patch schedule, port by port
 //! ```
+//!
+//! An operator carries a number, a speed or both. A choice from a fixed list,
+//! such as the shape of the fabric or what its links are made of, is a flag
+//! instead - `--shape`, `--media` - so there is one rule for which is which
+//! rather than a sigil to remember for each.
 //!
 //! Unlike the prefix side of this repository, the grammar here is a sigil and
 //! a payload with no ambiguity to resolve between them, so it is a match on
@@ -22,7 +25,6 @@
 //! with a unit is a port speed, which is why `%4` and `%400G` mean different
 //! things and neither has to be guessed at.
 
-use super::Topology;
 use super::speed::{self, Speed};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,8 +35,6 @@ pub enum Op {
     Breakout(Breakout),
     /// `x2` - how many parallel links join each pair of switches.
     PerPair(u32),
-    /// `/ring` - the shape of the fabric.
-    Shape(Topology),
     /// `=32`, or `=4@100G` - how many ports each switch has, as a question.
     /// A speed narrows it to the ports at that speed, which is the only way
     /// to ask about a switch whose front panel is not all one thing.
@@ -45,8 +45,6 @@ pub enum Op {
     /// `-48@25G` - the ports on each leaf that face servers rather than the
     /// fabric. They are what an oversubscription ratio is a ratio of.
     Access(Access),
-    /// `.` - which port on which switch reaches which.
-    Schedule,
 }
 
 /// A port count to check the plan against, and what kind of port it counts.
@@ -92,18 +90,18 @@ pub fn parse(token: &str) -> Result<Op, String> {
         '@' => Ok(Op::Speed(speed::parse(payload)?)),
         '%' => Ok(Op::Breakout(breakout(payload)?)),
         'x' | 'X' | '*' => Ok(Op::PerPair(per_pair(payload)?)),
-        '/' => Topology::parse(payload)
-            .map(Op::Shape)
-            .ok_or_else(|| format!("'{payload}' is not a topology: it is /mesh, /ring or /star")),
         '+' => Ok(Op::Spines(spines(payload)?)),
         '-' => Ok(Op::Access(access(payload)?)),
         '=' => Ok(Op::Budget(budget(payload)?)),
-        '.' if payload.is_empty() => Ok(Op::Schedule),
-        '.' => Err(format!(
-            "'.' takes nothing after it; '{token}' looks like something else"
+        // The two that became flags are worth naming rather than calling
+        // unknown: they were operators, and somebody will still type them.
+        '/' => Err(format!(
+            "'{token}' is not an operator: the shape is a flag now, one of \
+             --shape=mesh, ring, star or leaf-spine"
         )),
+        '.' => Err("the patch schedule is a flag now: --schedule rather than '.'".into()),
         _ => Err(format!(
-            "unknown operator '{token}': expected @SPEED, %M, xK, /mesh, +S, -N@SPEED, =N or ."
+            "unknown operator '{token}': expected @SPEED, %M, xK, +S, -N@SPEED or =N"
         )),
     }
 }
@@ -196,7 +194,10 @@ fn budget(payload: &str) -> Result<Budget, String> {
 /// `x2` is the one that does not start with a sigil, and the digit after it
 /// is what keeps it apart from a word that happens to begin with an x.
 pub fn looks_like_op(token: &str) -> bool {
-    if token.starts_with(['@', '%', '/', '=', '+']) || token == "." {
+    // `/` and `.` are not operators any more, but a token starting with
+    // either is still one somebody meant, and parse() has a better answer for
+    // it than clap does.
+    if token.starts_with(['@', '%', '=', '+', '/']) || token == "." {
         return true;
     }
     // `-48@25G` is an operator and `-n` is a flag: what separates them is the
@@ -271,8 +272,6 @@ mod tests {
         assert_eq!(p("x2"), Op::PerPair(2));
         assert_eq!(p("X2"), Op::PerPair(2));
         assert_eq!(p("*2"), Op::PerPair(2));
-        assert_eq!(p("/ring"), Op::Shape(Topology::Ring));
-        assert_eq!(p("/MESH"), Op::Shape(Topology::Mesh));
         assert_eq!(
             p("=32"),
             Op::Budget(Budget {
@@ -287,7 +286,6 @@ mod tests {
                 speed: Some(speed::parse("100G").unwrap()),
             })
         );
-        assert_eq!(p("."), Op::Schedule);
     }
 
     #[test]
@@ -329,9 +327,19 @@ mod tests {
         }
     }
 
+    /// The shape and the schedule were operators before they were flags, so
+    /// the old spelling says where they went rather than that it was never
+    /// an operator at all.
+    #[test]
+    fn the_operators_that_became_flags_say_so() {
+        assert!(parse("/ring").unwrap_err().contains("--shape=mesh, ring"));
+        assert!(parse(".").unwrap_err().contains("--schedule"));
+        assert!(looks_like_op("/ring") && looks_like_op("."));
+    }
+
     #[test]
     fn an_error_says_what_was_wrong_with_it() {
-        assert!(parse("/banana").unwrap_err().contains("/mesh"));
+        assert!(parse("/banana").unwrap_err().contains("--shape"));
         assert!(parse("%1").unwrap_err().contains("not splitting"));
         assert!(parse("@banana").unwrap_err().contains("100G"));
         assert!(parse("banana").unwrap_err().contains("unknown operator"));

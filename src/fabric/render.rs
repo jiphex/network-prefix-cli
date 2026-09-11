@@ -186,11 +186,7 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         w,
         o,
         "Hops",
-        &format!(
-            "{}  {}",
-            p.hops,
-            o.style.dim("(worst case, switch to switch)")
-        ),
+        &format!("{}  {}", p.hops, o.style.dim(&format!("({})", path(p)))),
     )?;
     field(w, o, "Resilience", &resilience(p))?;
     // The reason anyone buys the second spine, said in the terms they buy it
@@ -272,6 +268,19 @@ fn between(topology: Topology) -> &'static str {
         Topology::Ring => "to each neighbour",
         Topology::Star => "from the hub to each spoke",
         Topology::LeafSpine => "from each leaf to each spine",
+    }
+}
+
+/// The longest path through the fabric, said as the switches it crosses
+/// rather than as a number on its own.
+fn path(p: &Plan) -> &'static str {
+    match p.topology {
+        Topology::Mesh => "every switch reaches every other directly",
+        Topology::Ring if p.switches == 2 => "one switch to the other",
+        Topology::Ring => "the far side of the ring, one neighbour at a time",
+        Topology::Star if p.switches == 2 => "the hub to its spoke",
+        Topology::Star => "spoke to hub to spoke",
+        Topology::LeafSpine => "leaf to spine to leaf",
     }
 }
 
@@ -500,11 +509,30 @@ fn cabling(w: &mut impl Write, p: &Plan, o: &Opts) -> io::Result<()> {
         .max()
         .unwrap_or(4)
         .max(4);
+    let where_col = p
+        .materials
+        .iter()
+        .map(|i| i.note.len())
+        .max()
+        .unwrap_or(5)
+        .max(5);
     writeln!(
         w,
         "  {}",
         o.style
             .dim(&format!("{:>qty$}  {:<item$}  Where", "Qty", "Item"))
+    )?;
+    // A rule under the header, because the columns are wide enough by now
+    // that a reader has to trace across them.
+    writeln!(
+        w,
+        "  {}",
+        o.style.dim(&format!(
+            "{}  {}  {}",
+            "-".repeat(qty),
+            "-".repeat(item),
+            "-".repeat(where_col)
+        ))
     )?;
     for i in &p.materials {
         // Padded before styling, so the columns line up whether or not the
@@ -921,9 +949,27 @@ mod tests {
     use crate::fabric::{Media, ops, plan};
     use crate::style::When;
 
+    /// The shape still reads inline in these cases, as `/star`, so the lists
+    /// below stay one line each; it is a flag on the command line now.
     fn report(switches: u64, args: &[&str], media: Media) -> Report {
-        let ops: Vec<_> = args.iter().map(|a| ops::parse(a).unwrap()).collect();
-        plan::build(switches, &ops, media).expect("plans")
+        let mut opts = plan::Options {
+            media,
+            ..plan::Options::default()
+        };
+        let mut ops = Vec::new();
+        for arg in args {
+            match arg.strip_prefix('/') {
+                Some(shape) => {
+                    opts.shape = Some(
+                        <Topology as clap::ValueEnum>::from_str(&shape.to_ascii_lowercase(), true)
+                            .expect("a shape"),
+                    )
+                }
+                None if *arg == "." => opts.schedule = true,
+                None => ops.push(ops::parse(arg).expect("an operator")),
+            }
+        }
+        plan::build(switches, &ops, opts).expect("plans")
     }
 
     fn opts(style: Style) -> Opts {

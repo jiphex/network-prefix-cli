@@ -14,7 +14,7 @@ programs, so a change to one of those modules is a change to both tools.
 
 ```
 cargo build
-cargo test --locked --all-targets      # 281 tests: 188 unit, 9 CLI, 84 end-to-end
+cargo test --locked --all-targets      # 290 tests: 195 unit, 10 CLI, 85 end-to-end
 cargo clippy --locked --all-targets
 cargo fmt --all --check
 ```
@@ -68,6 +68,7 @@ down:
 | `fabric/plan.rs` | Topology, ports, cables, transceivers and bandwidth |
 | `fabric/schedule.rs` | Which port on which switch reaches which |
 | `fabric/render.rs` | Text, `--quiet` and `--json` output |
+| `fabric/dot.rs` | A Graphviz drawing of the fabric |
 
 `num.rs`, `style.rs` and `json.rs` are the three modules both tools use. The
 fabric grammar is hand-written rather than parsed with nom because it has no
@@ -239,6 +240,20 @@ Switch counts are capped at 4,096 and parallel links at 64, which keeps the
 products - a mesh of 4,096 is 8,386,560 links - inside a `u64` with room to
 spare.
 
+## Drawing
+
+`--dot` is the third output mode, and the only one that shows the shape rather
+than counting it. One edge per pair of switches by default; with `--schedule`,
+one per cable, labelled with the ports at its ends. It is generated from the
+same `Links` iterator the schedule uses, stepped over the parallel links, so a
+drawing and a schedule can never disagree about what is connected to what.
+
+DOT labels are quoted strings in which `\n` is a line break, so each line of a
+node label is escaped on its own and joined afterwards - escaping the whole
+label would turn the separator into the literal characters. `dot -Tsvg` over
+the output is the check worth running after touching it; it is not in the test
+suite because the suite may not have Graphviz.
+
 ## Shell-facing details
 
 Operator sigils must survive an unquoted shell. `*` is a glob, which is why
@@ -256,6 +271,15 @@ tells it from an ordinary word by the digit after the `x`. `*K` means the same
 thing and is what a shell globs, which is why both exist - as `-64x2` does on
 the prefix side. `-48@25G` is told from `-n` and `--json` the same way the
 prefix side does it: a digit has to follow the `-`.
+
+**An operator carries a number; a flag carries a choice.** `@100G`, `%4`,
+`x2`, `+2`, `-48@25G` and `=32@400G` all carry a figure that could be any of a
+million; the shape of the fabric and what its links are made of are each one
+of four, so they are `--shape` and `--media`. That line is what keeps the
+grammar explicable, and it is why `/mesh` and `.` stopped being operators -
+both are choices rather than quantities. Typing either still reaches
+`ops::parse`, which says where it went instead of leaving clap to call it an
+unexpected argument; `looks_like_op` keeps them for exactly that reason.
 
 `+S` carries the shape as well as a number. Saying how many spines there are
 is what makes a fabric a leaf-spine, because there is no other shape the

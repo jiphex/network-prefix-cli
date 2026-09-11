@@ -2,8 +2,8 @@
 //! switches to each other.
 
 use clap::Parser;
-use prefixtool::fabric::plan::Problem;
-use prefixtool::fabric::{Media, ops, plan, render};
+use prefixtool::fabric::plan::{Options, Problem};
+use prefixtool::fabric::{Media, Topology, dot, ops, plan, render};
 use prefixtool::style;
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
@@ -14,13 +14,16 @@ OPERATORS:
   %M            break each switch port into M lanes
   %SPEED        the same, worked out from the port speed instead of counted
   xK, *K        K parallel links between each pair (use the x form in zsh)
-  /SHAPE        /mesh (the default), /ring, /star or /leaf-spine
   +S            S spines above the leaves, which makes it a leaf-spine
   -N@SPEED      N server ports on each leaf, at that speed
   -N@SPEED%P    the same, out of P ports split into lanes to reach them
   =N            each switch has N ports - does the plan fit?
   =N@SPEED      the same, about the N ports it has at one speed
-  .             the patch schedule: which port on which switch reaches which
+
+  An operator carries a number, a speed or both. A choice from a fixed list -
+  the shape of the fabric, what its links are made of - is a flag instead, so
+  there is one rule for which is which rather than a sigil for each: --shape
+  and --media.
 
   A bare number after % is a lane count and a number with a unit is a port
   speed, so %4 and %400G are different questions and neither has to be
@@ -62,10 +65,10 @@ EXAMPLES:
   fabrictool 4 @400G x2
         two links between each pair, so any one of them can fail
 
-  fabrictool 24 /ring @100G
+  fabrictool 24 --shape=ring @100G
         a ring instead, and what that costs in bandwidth across the middle
 
-  fabrictool 48 /star @25G %100G --media=dac
+  fabrictool 48 --shape=star @25G %100G --media=dac
         one hub, 25G to each spoke, split four ways out of its 100G ports
 
   fabrictool 16 +2 @100G %400G -48@25G
@@ -78,8 +81,12 @@ EXAMPLES:
         switch really has: 32 ports at 400G on the spines, and 48 at 25G
         with four at 100G on the leaves
 
-  fabrictool 8 @100G %400G . --all
+  fabrictool 8 @100G %400G --schedule --all
         the schedule to take to the rack, every link of it
+
+  fabrictool 16 +2 @100G %400G --dot | dot -Tpng > fabric.png
+        the same fabric as a picture, for checking the shape rather than
+        counting it
 
 COLOUR:
   The report is coloured when it is going to a terminal, and never when it is
@@ -100,7 +107,10 @@ EXIT STATUS:
   mistyped port count is a different thing from a confident no.
 
   --quiet prints the bill of materials as 'quantity<TAB>item', one per line,
-  or the patch schedule as one link per line when . was given.
+  or the patch schedule as one link per line when --schedule was given.
+
+  --dot emits a Graphviz graph: one edge per pair of switches, or one per
+  cable with --schedule.
 ";
 
 #[derive(Parser)]
@@ -118,7 +128,7 @@ struct Cli {
     #[arg(value_name = "SWITCHES")]
     switches: String,
 
-    /// Operators: @SPEED, %M, xK, /mesh, +S, -N@SPEED, =N, .  (see below)
+    /// Operators: @SPEED, %M, xK, +S, -N@SPEED, =N  (see below)
     #[arg(value_name = "OP", allow_hyphen_values = true)]
     ops: Vec<String>,
 
@@ -138,10 +148,22 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
+    /// The shape of the fabric: mesh (default), ring, star or leaf-spine
+    #[arg(long, value_name = "SHAPE", value_enum)]
+    shape: Option<Topology>,
+
     /// What the links are made of: optic, aoc or dac
     #[arg(long, value_name = "KIND", default_value_t = Media::Optic,
           value_enum, hide_default_value = true)]
     media: Media,
+
+    /// Print the patch schedule: which port on which switch reaches which
+    #[arg(long)]
+    schedule: bool,
+
+    /// Emit a Graphviz DOT graph of the fabric instead of a report
+    #[arg(long)]
+    dot: bool,
 
     /// When to colour the report: auto, always or never
     #[arg(long, value_name = "WHEN", default_value_t = style::When::Auto,
@@ -206,13 +228,21 @@ fn run(cli: &Cli) -> Result<ExitCode, Problem> {
         .map(|o| ops::parse(o))
         .collect::<Result<Vec<_>, _>>()
         .map_err(Problem::Input)?;
-    let report = plan::build(switches, &parsed, cli.media)?;
+    let report = plan::build(
+        switches,
+        &parsed,
+        Options {
+            media: cli.media,
+            shape: cli.shape,
+            schedule: cli.schedule,
+        },
+    )?;
 
     let opts = render::Opts {
         limit: cli.limit,
         all: cli.all,
         // Machine-readable output is never coloured, whatever was asked for.
-        style: if cli.json || cli.quiet {
+        style: if cli.json || cli.quiet || cli.dot {
             style::Style::plain()
         } else {
             style::Style::new(cli.color)
@@ -222,6 +252,8 @@ fn run(cli: &Cli) -> Result<ExitCode, Problem> {
     let mut w = BufWriter::new(stdout.lock());
     let written = if cli.json {
         render::json(&mut w, &report, &opts)
+    } else if cli.dot {
+        dot::write(&mut w, &report)
     } else if cli.quiet {
         render::quiet(&mut w, &report, &opts)
     } else {
@@ -230,7 +262,8 @@ fn run(cli: &Cli) -> Result<ExitCode, Problem> {
     .and_then(|()| w.flush());
 
     if let Err(e) = written {
-        // `fabrictool 256 . --all | head` is a normal way to use this.
+        // `fabrictool 256 --schedule --all | head` is a normal way to use
+        // this.
         if e.kind() == io::ErrorKind::BrokenPipe {
             return Ok(ExitCode::SUCCESS);
         }
@@ -267,17 +300,28 @@ mod tests {
 
     #[test]
     fn flags_may_precede_operators() {
-        let cli = parse(&["fabrictool", "--all", "16", "/ring", "x2"]);
+        let cli = parse(&["fabrictool", "--all", "16", "--shape=ring", "x2"]);
         assert_eq!(cli.switches, "16");
-        assert_eq!(cli.ops, vec!["/ring", "x2"]);
+        assert_eq!(cli.ops, vec!["x2"]);
+        assert_eq!(cli.shape, Some(Topology::Ring));
         assert!(cli.all);
     }
 
     #[test]
     fn the_switch_count_is_not_mistaken_for_a_flag_value() {
-        let cli = parse(&["fabrictool", "-n", "4", "8", "."]);
+        let cli = parse(&["fabrictool", "-n", "4", "8", "--schedule"]);
         assert_eq!((cli.switches.as_str(), cli.limit), ("8", 4));
-        assert_eq!(cli.ops, vec!["."]);
+        assert!(cli.schedule);
+        assert!(cli.ops.is_empty());
+    }
+
+    /// The shape and the schedule were operators until they were flags, and
+    /// the old spelling still reaches the operator parser, which says where
+    /// they went rather than letting clap call it an unexpected argument.
+    #[test]
+    fn the_old_operator_spellings_still_reach_a_useful_error() {
+        let cli = parse(&["fabrictool", "8", "/ring", "."]);
+        assert_eq!(cli.ops, vec!["/ring", "."]);
     }
 
     #[test]

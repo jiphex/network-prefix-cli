@@ -27,6 +27,18 @@ pub struct End {
     pub lane: Option<u64>,
 }
 
+impl End {
+    /// What the switch at this end is called, without the port on it.
+    pub fn name(&self) -> String {
+        format!("{}{}", self.prefix, self.number)
+    }
+
+    /// The same, for a label that names the port separately.
+    pub fn prefix_number(&self) -> String {
+        self.name()
+    }
+}
+
 impl fmt::Display for End {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}{}:{}", self.prefix, self.number, self.port)?;
@@ -142,7 +154,24 @@ impl Links {
     }
 }
 
-/// The patch schedule: every link, with the port each end lands in.
+/// What a switch is called: `sw3` where every switch is alike, and `spine1`
+/// or `leaf5` where they are not, each numbered within its own population.
+pub fn name(plan: &Plan, index: u64) -> String {
+    match plan.topology {
+        Topology::LeafSpine if index < plan.spines => format!("spine{}", index + 1),
+        Topology::LeafSpine => format!("leaf{}", index - plan.spines + 1),
+        _ => format!("sw{}", index + 1),
+    }
+}
+
+/// Every pair of switches the fabric joins, once each, whatever the per-pair
+/// link count. A drawing wants the shape rather than the cables, and the
+/// parallel links of a pair arrive together, so stepping over them is enough.
+pub fn pairs(plan: &Plan) -> impl Iterator<Item = (u64, u64)> {
+    Links::new(plan).step_by(plan.per_pair as usize)
+}
+
+/// The patch schedule: every link, with the port each end connects to.
 pub struct Schedule {
     links: Links,
     topology: Topology,
@@ -215,13 +244,24 @@ impl Iterator for Schedule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fabric::Media;
     use crate::fabric::ops;
     use crate::fabric::plan::{self, Problem};
 
     fn plan_of(switches: u64, args: &[&str]) -> Plan {
-        let ops: Vec<_> = args.iter().map(|a| ops::parse(a).unwrap()).collect();
-        plan::build(switches, &ops, Media::Optic)
+        let mut opts = plan::Options::default();
+        let mut ops = Vec::new();
+        for arg in args {
+            match arg.strip_prefix('/') {
+                Some(shape) => {
+                    opts.shape = Some(
+                        <Topology as clap::ValueEnum>::from_str(&shape.to_ascii_lowercase(), true)
+                            .expect("a shape"),
+                    )
+                }
+                None => ops.push(ops::parse(arg).expect("an operator")),
+            }
+        }
+        plan::build(switches, &ops, opts)
             .map_err(|e: Problem| e.to_string())
             .expect("plans")
             .plan
