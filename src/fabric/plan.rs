@@ -202,9 +202,17 @@ pub struct Item {
 }
 
 /// The answer to `=N`: whether the plan fits a switch with that many ports.
+///
+/// A bare `=N` is about the whole front panel. `=N@SPEED` is about the ports
+/// at one speed, which is how a real switch is specified - 48 at 25G, four at
+/// 100G, two at 200G - and the only way to ask whether a plan fits one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Budget {
     pub ports: u64,
+    pub speed: Option<Speed>,
+    /// Only the kinds of switch that use a port of that speed at all. A
+    /// question about 400G ports has nothing to say about a leaf that has
+    /// none.
     pub sides: Vec<BudgetSide>,
 }
 
@@ -332,7 +340,7 @@ pub fn build(switches: u64, ops: &[Op], media: Media) -> Result<Report, Problem>
             Op::Shape(t) => set_once(&mut topology, *t, "a topology")?,
             Op::Spines(n) => set_once(&mut spines, u64::from(*n), "a spine count")?,
             Op::Access(a) => set_once(&mut access, *a, "a server port count")?,
-            Op::Budget(n) => budgets.push(u64::from(*n)),
+            Op::Budget(b) => budgets.push(*b),
             Op::Schedule => schedule = true,
         }
     }
@@ -823,7 +831,10 @@ fn materials(
             quantity: trunk_ports,
             key: keyed(&format!("splitter-1x{lanes}"), port_speed),
             label: format!("{}{} splitter", harness(true), media),
-            note: format!("one per {up} port, a lane to each of {lanes} {down}s"),
+            note: format!(
+                "one per {up} port, a lane to each of {}",
+                plural(lanes, down)
+            ),
         }),
     }
     // Ports are not something anyone buys, but they are the thing that runs
@@ -882,27 +893,43 @@ fn plural(n: u64, what: &str) -> String {
     format!("{n} {}", if n == 1 { what.to_string() } else { plural })
 }
 
-fn budget(plan: &Plan, ports: u64) -> Budget {
+fn budget(plan: &Plan, asked: ops::Budget) -> Budget {
+    let ports = u64::from(asked.ports);
+    let sides = plan
+        .sides
+        .iter()
+        .filter_map(|s| {
+            // Servers and the fabric come out of the same front panel, so
+            // what has to fit is both of them together - and when the
+            // question names a speed, only the ports running at it.
+            let (fabric, servers) = match asked.speed {
+                None => (s.ports, s.access.map(|a| (a.ports, a.port_speed))),
+                Some(at) => (
+                    if s.port_speed == Some(at) { s.ports } else { 0 },
+                    s.access
+                        .filter(|a| a.port_speed == at)
+                        .map(|a| (a.ports, a.port_speed)),
+                ),
+            };
+            let needed = fabric + servers.map_or(0, |(n, _)| n);
+            if needed == 0 {
+                return None;
+            }
+            Some(BudgetSide {
+                role: s.role,
+                needed,
+                port_speed: asked.speed.or(s.port_speed),
+                fabric,
+                servers,
+                spare: ports.saturating_sub(needed),
+                short: needed.saturating_sub(ports),
+            })
+        })
+        .collect();
     Budget {
         ports,
-        sides: plan
-            .sides
-            .iter()
-            .map(|s| {
-                // Servers and the fabric come out of the same front panel, so
-                // what has to fit is both of them together.
-                let needed = s.total_ports();
-                BudgetSide {
-                    role: s.role,
-                    needed,
-                    port_speed: s.port_speed,
-                    fabric: s.ports,
-                    servers: s.access.map(|a| (a.ports, a.port_speed)),
-                    spare: ports.saturating_sub(needed),
-                    short: needed.saturating_sub(ports),
-                }
-            })
-            .collect(),
+        speed: asked.speed,
+        sides,
     }
 }
 
@@ -1313,13 +1340,66 @@ mod tests {
                         side.role
                     );
                 }
-                let budget = super::budget(&p, 1_000);
+                let budget = super::budget(
+                    &p,
+                    ops::Budget {
+                        ports: 1_000,
+                        speed: None,
+                    },
+                );
                 for (b, side) in budget.sides.iter().zip(&p.sides) {
                     assert_eq!(b.needed, side.total_ports(), "{switches} {args:?}");
                     assert_eq!(b.fabric, side.ports);
                 }
             }
         }
+    }
+
+    /// A real switch is specified by what it has at each speed - 48 at 25G,
+    /// four at 100G, two at 200G - and a single total cannot answer whether a
+    /// plan fits one.
+    #[test]
+    fn a_budget_can_ask_about_one_kind_of_port() {
+        let ops = ops(&[
+            "+4", "@100G", "%400G", "-48@25G", "=32@400G", "=4@100G", "=48@25G", "=2@200G",
+        ]);
+        let r = build(8, &ops, Media::Optic).expect("plans");
+        let [spine_400, leaf_100, leaf_25, none_200] = &r.budgets[..] else {
+            panic!("four budgets, got {}", r.budgets.len());
+        };
+
+        // Two of the spine's 32 400G ports carry all eight leaves.
+        assert!(spine_400.fits());
+        assert_eq!(spine_400.sides.len(), 1);
+        assert_eq!(spine_400.sides[0].role, Role::Spine);
+        assert_eq!(
+            (spine_400.sides[0].needed, spine_400.sides[0].spare),
+            (2, 30)
+        );
+
+        // The leaf's four 100G ports are its four uplinks, exactly.
+        assert_eq!(leaf_100.sides[0].role, Role::Leaf);
+        assert_eq!((leaf_100.sides[0].needed, leaf_100.sides[0].spare), (4, 0));
+        assert_eq!(leaf_25.sides[0].needed, 48);
+
+        // Nothing runs at 200G, and that is an answer rather than a fit.
+        assert!(none_200.sides.is_empty());
+        assert!(none_200.fits());
+    }
+
+    #[test]
+    fn a_port_speed_the_plan_cannot_reach_is_reported_short() {
+        // Four spines at 200G needs four 200G ports on a leaf that has two.
+        let r = build(
+            8,
+            &ops(&["+4", "@200G", "%400G", "-48@25G", "=2@200G"]),
+            Media::Optic,
+        )
+        .expect("plans");
+        let b = &r.budgets[0];
+        assert!(!b.fits());
+        assert_eq!(b.sides[0].role, Role::Leaf);
+        assert_eq!((b.sides[0].needed, b.sides[0].short), (4, 2));
     }
 
     #[test]

@@ -19,6 +19,7 @@ OPERATORS:
   -N@SPEED      N server ports on each leaf, at that speed
   -N@SPEED%P    the same, out of P ports split into lanes to reach them
   =N            each switch has N ports - does the plan fit?
+  =N@SPEED      the same, about the N ports it has at one speed
   .             the patch schedule: which port on which switch reaches which
 
   A bare number after % is a lane count and a number with a unit is a port
@@ -32,6 +33,11 @@ OPERATORS:
   leaf-spine's spines - the upstream end breaks out and each switch below it
   takes a whole port, which is what a DAC or AOC splitter cable is built for
   and what a 400G spine port fanned out to four 100G leaves is.
+
+  A real switch is specified by what it has at each speed - 48 at 25G, four
+  at 100G, two at 200G - so =N@SPEED asks about one kind of port at a time,
+  and a bare =N asks about the whole front panel. Several of either may be
+  given; under --quiet any one of them not fitting is the exit status.
 
   Server ports are the other half of an oversubscription ratio: what is
   attached to a switch against what leaves it. They land on whichever
@@ -67,9 +73,10 @@ EXAMPLES:
         uplinks, 48 servers at 25G under each leaf - and what that is
         oversubscribed by
 
-  fabrictool 16 +4 @100G %400G -48@25G%100G =56
-        the same with four spines and the servers arriving on split 100G
-        ports, against the 56 ports a leaf actually has
+  fabrictool 8 +4 @100G %400G -48@25G =32@400G =4@100G =48@25G
+        eight leaves on four spines, checked against the front panel each
+        switch really has: 32 ports at 400G on the spines, and 48 at 25G
+        with four at 100G on the leaves
 
   fabrictool 8 @100G %400G . --all
         the schedule to take to the rack, every link of it

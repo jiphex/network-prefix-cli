@@ -549,13 +549,26 @@ fn arrangement(p: &Plan) -> String {
 }
 
 fn budget(w: &mut impl Write, p: &Plan, b: &Budget, o: &Opts) -> io::Result<()> {
-    heading(w, o, &format!("Ports on a {}-port switch", b.ports))?;
+    heading(
+        w,
+        o,
+        &match b.speed {
+            Some(at) => format!("{at} ports on a {}-port switch", b.ports),
+            None => format!("Ports on a {}-port switch", b.ports),
+        },
+    )?;
     let verdict = if b.fits() {
         o.style.good("yes")
     } else {
         o.style.bad("no")
     };
     let why = match b.sides.iter().find(|s| s.short > 0) {
+        // A question about a kind of port nothing uses is answered rather
+        // than left to be inferred from an empty list.
+        None if b.sides.is_empty() => match b.speed {
+            Some(at) => format!("nothing in this plan uses a port at {at}"),
+            None => "it fits".to_string(),
+        },
         None => "it fits".to_string(),
         Some(s) if p.sides.len() > 1 => format!("{} is {} short", s.role.label(), s.short),
         Some(s) => format!("{} short on each switch", plural(s.short, "port")),
@@ -569,13 +582,21 @@ fn budget(w: &mut impl Write, p: &Plan, b: &Budget, o: &Opts) -> io::Result<()> 
         .unwrap_or(0);
     for s in &b.sides {
         let used = match (s.port_speed, s.servers) {
+            // Where the fabric and the servers both land on ports of this
+            // speed, the total alone hides which is which.
+            (Some(sp), Some((servers, at))) if s.fabric > 0 && at == sp && b.speed.is_some() => {
+                format!(
+                    "{} of {} ports at {sp} ({} uplink, {servers} server)",
+                    s.needed, b.ports, s.fabric
+                )
+            }
             // A switch whose ports are not all the same speed needs the
             // breakdown, or the total reads as a count of one kind of port.
-            (Some(sp), Some((servers, at))) => format!(
+            (Some(sp), Some((servers, at))) if b.speed.is_none() => format!(
                 "{} of {} ports ({} at {sp}, {servers} at {at})",
                 s.needed, b.ports, s.fabric
             ),
-            (Some(sp), None) => format!("{} of {} ports at {sp}", s.needed, b.ports),
+            (Some(sp), _) => format!("{} of {} ports at {sp}", s.needed, b.ports),
             (None, _) => format!("{} of {} ports", s.needed, b.ports),
         };
         let tail = if s.short > 0 {
@@ -803,6 +824,7 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                 .map(|b| {
                     J::Obj(vec![
                         ("ports", json::n(b.ports)),
+                        ("speed_mbps", b.speed.map_or(J::Null, |s| json::n(s.mbps()))),
                         ("fits", J::Bool(b.fits())),
                         (
                             "roles",
@@ -958,6 +980,12 @@ mod tests {
             (16, vec!["+2", "@100G", "%400G", "-48@25G", "=56", "."]),
             (2, vec!["+2", "@100G", "-48@25G"]),
             (16, vec!["+1", "@100G", "-48@25G"]),
+            (
+                8,
+                vec![
+                    "+4", "@100G", "%400G", "-48@25G", "=32@400G", "=4@100G", "=2@200G",
+                ],
+            ),
             (16, vec!["+12", "@100G", "-48@25G%100G", "=64"]),
             (8, vec!["-24@10G"]),
         ] {
@@ -1131,6 +1159,36 @@ mod tests {
         );
         // And a shape without spines never mentions them.
         assert!(!rendered(8, &["@100G", "-24@10G"]).contains("Spine loss"));
+    }
+
+    #[test]
+    fn a_budget_can_be_asked_about_one_kind_of_port() {
+        let s = rendered(
+            8,
+            &["+4", "@100G", "%400G", "-48@25G", "=32@400G", "=4@100G"],
+        );
+        assert!(
+            s.contains("400G ports on a 32-port switch\n  yes - it fits\n  each spine  2 of 32 ports at 400G, 30 spare"),
+            "{s}"
+        );
+        assert!(s.contains("100G ports on a 4-port switch"), "{s}");
+        assert!(
+            s.contains("each leaf  4 of 4 ports at 100G, 0 spare"),
+            "{s}"
+        );
+
+        // Four spines at 200G is four 200G ports on a leaf that has two.
+        let s = rendered(8, &["+4", "@200G", "%400G", "-48@25G", "=2@200G"]);
+        assert!(
+            s.contains("200G ports on a 2-port switch\n  no - each leaf is 2 short"),
+            "{s}"
+        );
+        // And a speed nothing runs at is said outright.
+        let s = rendered(8, &["+4", "@100G", "-48@25G", "=32@400G"]);
+        assert!(
+            s.contains("yes - nothing in this plan uses a port at 400G"),
+            "{s}"
+        );
     }
 
     #[test]

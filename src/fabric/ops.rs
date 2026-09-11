@@ -11,6 +11,7 @@
 //!   -48@25G   48 server ports on each leaf, at 25G
 //!   -48@25G%100G  the same, out of 100G ports split four ways
 //!   =32       each switch has 32 ports - does this fit?
+//!   =4@100G   the same, about the four ports it has at one speed
 //!   .         the patch schedule, port by port
 //! ```
 //!
@@ -34,8 +35,10 @@ pub enum Op {
     PerPair(u32),
     /// `/ring` - the shape of the fabric.
     Shape(Topology),
-    /// `=32` - how many ports each switch has, as a question.
-    Budget(u32),
+    /// `=32`, or `=4@100G` - how many ports each switch has, as a question.
+    /// A speed narrows it to the ports at that speed, which is the only way
+    /// to ask about a switch whose front panel is not all one thing.
+    Budget(Budget),
     /// `+2` - how many spines sit above the leaves. Saying so at all is what
     /// makes the shape a leaf-spine.
     Spines(u32),
@@ -44,6 +47,15 @@ pub enum Op {
     Access(Access),
     /// `.` - which port on which switch reaches which.
     Schedule,
+}
+
+/// A port count to check the plan against, and what kind of port it counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Budget {
+    pub ports: u32,
+    /// The speed those ports run at, when the question is about one kind of
+    /// port rather than the whole panel.
+    pub speed: Option<Speed>,
 }
 
 /// Ports facing whatever hangs off the fabric, as the user wrote them.
@@ -163,14 +175,19 @@ fn access(payload: &str) -> Result<Access, String> {
     })
 }
 
-fn budget(payload: &str) -> Result<u32, String> {
-    let n: u32 = payload
+/// `=32`, or `=4@100G` for the ports at one speed.
+fn budget(payload: &str) -> Result<Budget, String> {
+    let (count, speed) = match payload.split_once('@') {
+        Some((count, speed)) => (count, Some(speed::parse(speed)?)),
+        None => (payload, None),
+    };
+    let ports: u32 = count
         .parse()
-        .map_err(|_| format!("'{payload}' is not a port count: write it like =32"))?;
-    if n == 0 {
+        .map_err(|_| format!("'{count}' is not a port count: write it like =32 or =4@100G"))?;
+    if ports == 0 {
         return Err("a switch with 0 ports cannot be wired to anything".into());
     }
-    Ok(n)
+    Ok(Budget { ports, speed })
 }
 
 /// Whether a bare argument is an operator rather than a flag or the switch
@@ -256,7 +273,20 @@ mod tests {
         assert_eq!(p("*2"), Op::PerPair(2));
         assert_eq!(p("/ring"), Op::Shape(Topology::Ring));
         assert_eq!(p("/MESH"), Op::Shape(Topology::Mesh));
-        assert_eq!(p("=32"), Op::Budget(32));
+        assert_eq!(
+            p("=32"),
+            Op::Budget(Budget {
+                ports: 32,
+                speed: None
+            })
+        );
+        assert_eq!(
+            p("=4@100G"),
+            Op::Budget(Budget {
+                ports: 4,
+                speed: Some(speed::parse("100G").unwrap()),
+            })
+        );
         assert_eq!(p("."), Op::Schedule);
     }
 
@@ -289,6 +319,9 @@ mod tests {
             "-48@",
             "-48@banana",
             "-lots@25G",
+            "=0@100G",
+            "=4@banana",
+            "=lots@100G",
             "-48@25G%0",
             "-48@25G%banana",
         ] {

@@ -14,7 +14,7 @@ programs, so a change to one of those modules is a change to both tools.
 
 ```
 cargo build
-cargo test --locked --all-targets      # 277 tests: 185 unit, 9 CLI, 83 end-to-end
+cargo test --locked --all-targets      # 281 tests: 188 unit, 9 CLI, 84 end-to-end
 cargo clippy --locked --all-targets
 cargo fmt --all --check
 ```
@@ -262,6 +262,13 @@ is what makes a fabric a leaf-spine, because there is no other shape the
 answer fits into, and `/leaf-spine +2` says the same thing twice. Giving a
 spine count to a shape that has none is an error rather than something to
 quietly ignore.
+
+`=N` is about the whole front panel and `=N@SPEED` about the ports at one
+speed. The second exists because a real switch is specified that way - 48 at
+25G, four at 100G, two at 200G - and a single total cannot answer whether a
+plan fits one: four 200G uplinks fit a 54-port leaf and do not fit its two
+200G ports. A speed nothing runs at is answered as such rather than silently
+fitting.
 
 A leaf-spine with no count is **a pair of spines**, not one, because that is
 how a rack is built: one spine is a single point of failure rather than a

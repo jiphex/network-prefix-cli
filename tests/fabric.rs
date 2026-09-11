@@ -260,6 +260,47 @@ fn server_ports_count_against_the_port_budget() {
     assert!(s.contains("each leaf   14 of 56 ports"), "{s}");
 }
 
+/// Four 32-port 400G spines, four racks of paired leaves, and leaves whose
+/// front panel is 48x25G + 2x200G + 4x100G: which cabling options fit.
+#[test]
+fn a_real_build_is_checked_against_the_leaf_it_has() {
+    let profile = ["=32@400G", "=4@100G", "=2@200G", "=48@25G"];
+
+    // 100G to every spine, out of the spine's 400G ports split four ways.
+    let mut args = vec!["8", "+4", "@100G", "%400G", "-48@25G", "--color=never"];
+    args.extend(profile);
+    let s = stdout(&args);
+    assert!(
+        s.contains("each spine  2 of 32 ports at 400G, 30 spare"),
+        "{s}"
+    );
+    assert!(
+        s.contains("each leaf  4 of 4 ports at 100G, 0 spare"),
+        "{s}"
+    );
+    assert!(
+        s.contains("each leaf  48 of 48 ports at 25G, 0 spare"),
+        "{s}"
+    );
+    assert!(!s.contains(" no - "), "{s}");
+
+    // 200G to every spine needs four 200G ports on a leaf that has two, so
+    // the full mesh cannot be kept at that speed.
+    let mut args = vec!["8", "+4", "@200G", "%400G", "-48@25G", "--color=never"];
+    args.extend(profile);
+    let s = stdout(&args);
+    assert!(
+        s.contains("200G ports on a 2-port switch\n  no - each leaf is 2 short"),
+        "{s}"
+    );
+    assert_eq!(
+        run(&["8", "+4", "@200G", "%400G", "=2@200G", "-q"])
+            .status
+            .code(),
+        Some(4)
+    );
+}
+
 #[test]
 fn servers_hang_off_the_edge_of_whatever_shape_it_is() {
     assert!(stdout(&["8", "-24@10G", "@100G", "--color=never"]).contains("on each switch"));
