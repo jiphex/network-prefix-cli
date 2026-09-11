@@ -194,7 +194,8 @@ fn aggregates_two_prefixes() {
 fn several_pluses_aggregate_together_not_pairwise() {
     let s = stdout(&["10.0.0.0/24", "+10.0.1.0/24", "+10.1.0.0/16"]);
 
-    // One aggregate covering everything, not one pairing per operator.
+    // The operators make one aggregate covering everything, not one pairing
+    // each.
     assert_eq!(s.matches("Aggregate ").count(), 1, "{s}");
     assert!(s.contains("Aggregate 10.0.0.0/24 with 10.0.1.0/24 and 10.1.0.0/16"));
     assert!(s.contains("10.0.0.0/15"));

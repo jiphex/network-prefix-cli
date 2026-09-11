@@ -50,7 +50,7 @@ nix run github:jiphex/network-prefix-cli -- 2001:db8::/52 -56 -64x2
 nix run github:jiphex/network-prefix-cli#fabrictool -- 8 @100G %400G
 ```
 
-Or built, or brought into a profile or a NixOS configuration:
+It can also be built, or brought into a profile or a NixOS configuration:
 
 ```
 nix build github:jiphex/network-prefix-cli
@@ -95,7 +95,7 @@ Or build it yourself:
 cargo install --git https://github.com/jiphex/network-prefix-cli
 ```
 
-From a checkout:
+It builds from a checkout too:
 
 ```
 cargo build --release
@@ -467,7 +467,7 @@ $ prefixtool 10.0.4.0/22 ^1 -q
 ```
 
 `@N` is the inverse of `=`: rather than asking which subnet an address is in,
-it asks for a subnet by number. Negative counts back from the end.
+it asks for a subnet by number. A negative index counts back from the end.
 
 ```
 $ prefixtool 2001:db8::/52 /64 @3 @-1 -q -n 0
@@ -1530,4 +1530,4 @@ and a fabric's link ends, ports and schedule all describe the same fabric.
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+This project is under the MIT licence; see [LICENSE](LICENSE).

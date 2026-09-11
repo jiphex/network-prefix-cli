@@ -33,7 +33,8 @@ script -qec "cargo test --locked --all-targets" /dev/null
 
 ## Dependencies
 
-`ipnet`, `clap`, `nom`. That is the whole list and it is deliberate.
+The dependencies are `ipnet`, `clap` and `nom`. That is the whole list, and
+it is deliberate.
 
 The colour handling, the JSON writer, the big-number formatting and the
 allocator are all hand-rolled because each would otherwise be a dependency
@@ -346,16 +347,25 @@ Versions below `1.0.0`, and any with a suffix, publish as pre-releases.
 
 ## Prose
 
-**Every sentence has a subject and a verb.** Do not write "Deliberately not
-counted: the cabling to the servers", or "One thing to flag:", or "Same
-twenty-eight links, but sixteen transceivers"; write "The bill of materials
-stops at the leaf" instead. A colon belongs after a complete clause and not
-after a fragment, and dropping the subject for emphasis reads as a tic rather
-than as economy.
+**Every sentence has a subject and a verb.** The colon is not what makes a
+fragment wrong; the missing subject is. All of these need rewriting, whatever
+punctuation they carry:
 
-That rule covers prose: the README, this file, help text, and any comment
-that explains something. It does not cover labels, which are allowed to be
-noun phrases because that is what they are: the summary line of a doc comment
+- "Deliberately not counted: the cabling to the servers."
+- "Same twenty-eight links, but sixteen transceivers."
+- "One edge per pair, labelled with what runs between them."
+- "Gone. Fixed. Done."
+
+Write "The bill of materials stops at the leaf" instead. Dropping the subject
+for emphasis reads as a tic rather than as economy, and it reads that way
+whether the sentence is in the README, in this file, in the help text, in a
+commit message, in a pull request, or in a comment that explains something.
+
+An imperative keeps its implied subject and is fine: "Run the suite through a
+pty as well as a pipe."
+
+The rule covers prose. It does not cover labels, which are noun phrases
+because that is what a label is: the summary line of a doc comment
 (`/// The shape of the fabric`), a `clap` flag description, a field value in
 the report, a column heading, a table cell.
 

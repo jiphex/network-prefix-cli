@@ -381,7 +381,7 @@ fn dot_draws_the_fabric() {
         s.contains("leaf1 [label=\"leaf1\\n2 x 100G\\n48 x 25G servers\"]"),
         "{s}"
     );
-    // Every leaf on every spine, and one edge per pair.
+    // Every leaf reaches every spine, and each pair gets one edge.
     assert_eq!(s.matches(" -- ").count(), 8);
     // It is never coloured, because it is another program's input.
     let painted = stdout(&["4", "+2", "@100G", "--dot", "--color=always"]);

@@ -112,7 +112,7 @@ impl Links {
             done: 0,
         };
         if plan.topology == Topology::LeafSpine {
-            // Spine 1 to every leaf, then spine 2, and so on.
+            // It runs spine 1 to every leaf, then spine 2, and so on.
             links.b = spines;
         }
         links
@@ -130,7 +130,8 @@ impl Links {
                     self.a = self.stop;
                 }
             }
-            // Each switch to the next, and the last back to the first.
+            // Each switch joins the next, and the last closes back on the
+            // first.
             Topology::Ring => {
                 self.a += 1;
                 self.b = (self.a + 1) % self.total;
@@ -142,7 +143,7 @@ impl Links {
                     self.a = self.stop;
                 }
             }
-            // Every leaf to every spine, a spine at a time.
+            // Every leaf reaches every spine, a spine at a time.
             Topology::LeafSpine => {
                 self.b += 1;
                 if self.b >= self.total {
