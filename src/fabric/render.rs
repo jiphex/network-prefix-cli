@@ -9,7 +9,7 @@
 //! width but the formatter counts it anyway, and `--quiet` and `--json` are
 //! never coloured, whatever `--color` says.
 
-use super::plan::{Arrangement, Budget, Item, Plan, Report, Role, Side};
+use super::plan::{Arrangement, Budget, Item, Plan, Ratio, Report, Role, Side};
 use super::schedule::Schedule;
 use super::speed::Speed;
 use super::{Media, Topology};
@@ -40,13 +40,29 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
     writeln!(
         w,
         "{}  {}  {}",
-        o.style.title(&plural(p.switches, "switch")),
+        o.style.title(&subject(p)),
         o.style.dim("-"),
         headline(p),
     )?;
     writeln!(w)?;
 
-    field(w, o, "Switches", &num::group(&p.switches.to_string()))?;
+    field(
+        w,
+        o,
+        "Switches",
+        &match p.spines {
+            0 => num::group(&p.switches.to_string()),
+            spines => format!(
+                "{}  {}",
+                num::group(&p.switches.to_string()),
+                o.style.dim(&format!(
+                    "({}, {})",
+                    plural(p.switches - spines, "leaf"),
+                    plural(spines, "spine")
+                ))
+            ),
+        },
+    )?;
     field(
         w,
         o,
@@ -115,6 +131,25 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         "Ports",
         p.sides.iter().map(|s| ports(s, multi, o)).collect(),
     )?;
+    let servers: Vec<String> = p
+        .sides
+        .iter()
+        .filter_map(|s| {
+            let a = s.access?;
+            Some(port_line(
+                a.ports,
+                Some(a.port_speed),
+                &whose(s, multi),
+                a.lanes,
+                a.servers,
+                a.spare_lanes,
+                o,
+            ))
+        })
+        .collect();
+    if !servers.is_empty() {
+        rows(w, o, "Server ports", servers)?;
+    }
 
     field(
         w,
@@ -163,6 +198,7 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
     }
 
     cabling(w, p, o)?;
+    oversubscription(w, p, o)?;
     for b in &r.budgets {
         budget(w, p, b, o)?;
     }
@@ -170,6 +206,20 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         schedule(w, p, o)?;
     }
     Ok(())
+}
+
+/// The left-hand half of the opening line: what was asked about. A
+/// leaf-spine is two populations and says so, because its switch count is not
+/// the number anybody typed.
+fn subject(p: &Plan) -> String {
+    match p.spines {
+        0 => plural(p.switches, "switch"),
+        spines => format!(
+            "{} + {}",
+            plural(p.switches - spines, "leaf"),
+            plural(spines, "spine")
+        ),
+    }
 }
 
 /// The right-hand half of the opening line: what shape, at what speed.
@@ -186,6 +236,7 @@ fn pair(topology: Topology) -> &'static str {
         Topology::Mesh => "pair",
         Topology::Ring => "neighbour",
         Topology::Star => "spoke",
+        Topology::LeafSpine => "uplink",
     }
 }
 
@@ -194,6 +245,7 @@ fn between(topology: Topology) -> &'static str {
         Topology::Mesh => "between each pair",
         Topology::Ring => "to each neighbour",
         Topology::Star => "from the hub to each spoke",
+        Topology::LeafSpine => "from each leaf to each spine",
     }
 }
 
@@ -207,28 +259,152 @@ fn resilience(p: &Plan) -> String {
     }
 }
 
-/// What one switch of a given kind gives up, and what is left over in it.
+/// What one switch of a given kind gives up to the fabric, and what is left
+/// over in it.
 fn ports(side: &Side, multi: bool, o: &Opts) -> String {
-    let each = match side.port_speed {
-        Some(s) => format!("{} x {s}", num::group(&side.ports.to_string())),
-        None => plural(side.ports, "port"),
-    };
-    let who = match (multi, side.role) {
+    port_line(
+        side.ports,
+        side.port_speed,
+        &whose(side, multi),
+        side.lanes,
+        side.degree,
+        side.spare_lanes,
+        o,
+    )
+}
+
+/// Whose ports a line is about. With one kind of switch there is nothing to
+/// distinguish, so it stays the plain "each switch" it always was.
+fn whose(side: &Side, multi: bool) -> String {
+    match (multi, side.role) {
         (false, _) => " on each switch".to_string(),
         (true, Role::Spoke) if side.switches == 1 => " on the spoke".to_string(),
         (true, r) => format!(" on {}", r.label()),
+    }
+}
+
+/// A count of ports at a speed, with the lanes inside them when they are
+/// broken out. Shared by the fabric-facing and server-facing lines, because
+/// they are the same arithmetic pointed in opposite directions.
+fn port_line(
+    ports: u64,
+    speed: Option<Speed>,
+    who: &str,
+    lanes: u64,
+    used: u64,
+    spare: u64,
+    o: &Opts,
+) -> String {
+    let each = match speed {
+        Some(s) => format!("{} x {s}", num::group(&ports.to_string())),
+        None => plural(ports, "port"),
     };
-    let lanes = if side.lanes > 1 {
+    let inside = if lanes > 1 {
         o.style.dim(&format!(
-            "  ({} lanes each: {} used, {} spare)",
-            side.lanes,
-            num::group(&side.degree.to_string()),
-            num::group(&side.spare_lanes.to_string()),
+            "  ({lanes} lanes each: {} used, {} spare)",
+            num::group(&used.to_string()),
+            num::group(&spare.to_string()),
         ))
     } else {
         String::new()
     };
-    format!("{each}{who}{lanes}")
+    format!("{each}{who}{inside}")
+}
+
+/// What is attached against what leaves - printed only when servers were
+/// mentioned, because without them there is no ratio to have.
+fn oversubscription(w: &mut impl Write, p: &Plan, o: &Opts) -> io::Result<()> {
+    let with_access: Vec<&Side> = p.sides.iter().filter(|s| s.access.is_some()).collect();
+    let Some(&side) = with_access.first() else {
+        return Ok(());
+    };
+    heading(w, o, "Oversubscription")?;
+    let access = side.access.expect("filtered for it");
+    for s in &with_access {
+        let a = s.access.expect("filtered for it");
+        let label = format!("Per {}", s.role.singular());
+        match s.ratio(p.speed) {
+            Some(ratio) => field(
+                w,
+                o,
+                &label,
+                &format!(
+                    "{}  {}",
+                    verdict(&ratio),
+                    o.style.dim(&format!(
+                        "({} attached against {} of fabric{})",
+                        a.speed.total(a.servers),
+                        p.speed
+                            .map_or(String::new(), |sp| sp.total(s.degree).to_string()),
+                        if ratio.blocking() {
+                            ""
+                        } else {
+                            " - non-blocking"
+                        }
+                    ))
+                ),
+            )?,
+            // Without a link speed there is a count but no ratio, and a ratio
+            // is what the section is for.
+            None => field(
+                w,
+                o,
+                &label,
+                &format!(
+                    "{} attached, fabric unknown  {}",
+                    a.speed.total(a.servers),
+                    o.style.dim("(add @100G for a ratio)")
+                ),
+            )?,
+        }
+    }
+    let total: u64 = with_access
+        .iter()
+        .map(|s| s.switches * s.access.expect("filtered for it").servers)
+        .sum();
+    field(
+        w,
+        o,
+        "Servers",
+        &format!(
+            "{} x {}  {}",
+            num::group(&total.to_string()),
+            access.speed,
+            o.style.dim(&format!(
+                "({} attached in total)",
+                access.speed.total(total)
+            ))
+        ),
+    )?;
+    Ok(())
+}
+
+/// The ratio itself: how many times more is attached than can leave, written
+/// the way it is said - the bigger side first, and always against one.
+fn verdict(ratio: &Ratio) -> String {
+    if ratio.blocking() {
+        return format!("{}:1", scaled(ratio.down, ratio.up));
+    }
+    format!("1:{}", scaled(ratio.up, ratio.down))
+}
+
+/// `a` over `b` to two decimal places, without going through a float and
+/// without trailing zeroes: 3, or 2.4, rather than 3.00 and 2.40.
+fn scaled(a: u64, b: u64) -> String {
+    if b == 0 {
+        return "0".into();
+    }
+    let hundredths = a.saturating_mul(100) / b;
+    let (whole, frac) = (hundredths / 100, hundredths % 100);
+    if frac == 0 {
+        return num::group(&whole.to_string());
+    }
+    let frac = format!("{frac:02}");
+    format!(
+        "{}.{}",
+        num::group(&whole.to_string()),
+        frac.trim_end_matches('0')
+    )
 }
 
 fn cabling(w: &mut impl Write, p: &Plan, o: &Opts) -> io::Result<()> {
@@ -236,8 +412,8 @@ fn cabling(w: &mut impl Write, p: &Plan, o: &Opts) -> io::Result<()> {
         w,
         o,
         &match p.speed {
-            Some(s) => format!("Cabling {} at {s}", plural(p.switches, "switch")),
-            None => format!("Cabling {}", plural(p.switches, "switch")),
+            Some(s) => format!("Cabling {} at {s}", subject(p)),
+            None => format!("Cabling {}", subject(p)),
         },
     )?;
     field(w, o, "Arrangement", &arrangement(p))?;
@@ -246,8 +422,9 @@ fn cabling(w: &mut impl Write, p: &Plan, o: &Opts) -> io::Result<()> {
         field(
             w,
             o,
-            match p.arrangement {
-                Arrangement::SplitAtHub => "Hub ports",
+            match (p.arrangement, p.topology) {
+                (Arrangement::SplitUpstream, Topology::LeafSpine) => "Spine ports",
+                (Arrangement::SplitUpstream, _) => "Hub ports",
                 _ => "Trunk ports",
             },
             &format!(
@@ -313,10 +490,16 @@ fn arrangement(p: &Plan) -> String {
             "{port} ports split {} ways at both ends, lanes joined in a patch field",
             p.lanes
         ),
-        (Arrangement::SplitAtHub, _) => format!(
-            "the hub's {port} ports split {} ways, a whole {link}port at each spoke",
-            p.lanes
-        ),
+        (Arrangement::SplitUpstream, _) => {
+            let (upstream, downstream) = match p.topology {
+                Topology::LeafSpine => ("each spine's", "leaf"),
+                _ => ("the hub's", "spoke"),
+            };
+            format!(
+                "{upstream} {port} ports split {} ways, a whole {link}port at each {downstream}",
+                p.lanes
+            )
+        }
     }
 }
 
@@ -340,9 +523,15 @@ fn budget(w: &mut impl Write, p: &Plan, b: &Budget, o: &Opts) -> io::Result<()> 
         .max()
         .unwrap_or(0);
     for s in &b.sides {
-        let used = match s.port_speed {
-            Some(sp) => format!("{} of {} ports at {sp}", s.needed, b.ports),
-            None => format!("{} of {} ports", s.needed, b.ports),
+        let used = match (s.port_speed, s.servers) {
+            // A switch whose ports are not all the same speed needs the
+            // breakdown, or the total reads as a count of one kind of port.
+            (Some(sp), Some((servers, at))) => format!(
+                "{} of {} ports ({} at {sp}, {servers} at {at})",
+                s.needed, b.ports, s.fabric
+            ),
+            (Some(sp), None) => format!("{} of {} ports at {sp}", s.needed, b.ports),
+            (None, _) => format!("{} of {} ports", s.needed, b.ports),
         };
         let tail = if s.short > 0 {
             o.style.bad(&format!("{} short", s.short))
@@ -439,12 +628,14 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
     let rate = |s: Option<Speed>| s.map_or(J::Null, |s| json::n(s.mbps()));
     let mut fields: Vec<(&'static str, J)> = vec![
         ("switches", json::n(p.switches)),
+        ("spines", json::n(p.spines)),
         (
             "topology",
             json::s(match p.topology {
                 Topology::Mesh => "mesh",
                 Topology::Ring => "ring",
                 Topology::Star => "star",
+                Topology::LeafSpine => "leaf-spine",
             }),
         ),
         ("links", json::n(p.links)),
@@ -458,7 +649,7 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
             json::s(match p.arrangement {
                 Arrangement::Straight => "straight",
                 Arrangement::SplitBothEnds => "split-both-ends",
-                Arrangement::SplitAtHub => "split-at-hub",
+                Arrangement::SplitUpstream => "split-upstream",
             }),
         ),
         ("trunk_ports", json::n(p.trunk_ports)),
@@ -479,6 +670,32 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
                             ("port_speed_mbps", rate(s.port_speed)),
                             ("lanes_per_port", json::n(s.lanes)),
                             ("spare_lanes", json::n(s.spare_lanes)),
+                            (
+                                "servers",
+                                match s.access {
+                                    None => J::Null,
+                                    Some(a) => J::Obj(vec![
+                                        ("ports", json::n(a.servers)),
+                                        ("speed_mbps", json::n(a.speed.mbps())),
+                                        ("switch_ports", json::n(a.ports)),
+                                        ("switch_port_speed_mbps", json::n(a.port_speed.mbps())),
+                                        ("lanes_per_port", json::n(a.lanes)),
+                                        ("spare_lanes", json::n(a.spare_lanes)),
+                                        ("attached_mbps", json::n(a.speed.mbps() * a.servers)),
+                                    ]),
+                                },
+                            ),
+                            (
+                                "oversubscription",
+                                match s.ratio(p.speed) {
+                                    None => J::Null,
+                                    Some(r) => J::Obj(vec![
+                                        ("attached_mbps", json::n(r.down)),
+                                        ("fabric_mbps", json::n(r.up)),
+                                        ("blocking", J::Bool(r.blocking())),
+                                    ]),
+                                },
+                            ),
                         ])
                     })
                     .collect(),
@@ -577,6 +794,7 @@ fn material(i: &Item) -> J {
 fn plural(n: u64, what: &str) -> String {
     let plural = match what {
         "switch" => "switches".to_string(),
+        "leaf" => "leaves".to_string(),
         w => format!("{w}s"),
     };
     format!(
@@ -667,6 +885,9 @@ mod tests {
             (4, vec!["/ring", "x2", "@400G", "=4", "."]),
             (2, vec![]),
             (16, vec!["@300G", "%3", "=8"]),
+            (16, vec!["+2", "@100G", "%400G", "-48@25G", "=56", "."]),
+            (16, vec!["+12", "@100G", "-48@25G%100G", "=64"]),
+            (8, vec!["-24@10G"]),
         ] {
             let r = report(switches, &args, Media::Optic);
             let mut plain = Vec::new();
@@ -758,6 +979,69 @@ mod tests {
     }
 
     #[test]
+    fn a_leaf_spine_says_which_switches_are_which() {
+        let s = rendered(16, &["+2", "@100G", "%400G", "-48@25G"]);
+        assert!(
+            s.starts_with("16 leaves + 2 spines  -  leaf-spine at 100G\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("Switches       18  (16 leaves, 2 spines)"),
+            "{s}"
+        );
+        assert!(
+            s.contains("Links          32  (1 link from each leaf to each spine)"),
+            "{s}"
+        );
+        assert!(s.contains("4 x 400G on each spine"), "{s}");
+        assert!(s.contains("2 x 100G on each leaf"), "{s}");
+        assert!(s.contains("Server ports   48 x 25G on each leaf"), "{s}");
+        assert!(s.contains("Spine ports    8"), "{s}");
+        assert!(
+            s.contains("each spine's 400G ports split 4 ways, a whole 100G port at each leaf"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn the_ratio_is_the_headline_of_its_own_section() {
+        let s = rendered(16, &["+2", "@100G", "-48@25G"]);
+        assert!(
+            s.contains("Per leaf       6:1  (1.2T attached against 200G of fabric)"),
+            "{s}"
+        );
+        assert!(
+            s.contains("Servers        768 x 25G  (19.2T attached in total)"),
+            "{s}"
+        );
+        // Enough uplink, and it says so rather than leaving the reader to
+        // notice which side of 1:1 the number fell.
+        let s = rendered(16, &["+12", "@100G", "-48@25G"]);
+        assert!(
+            s.contains("Per leaf       1:1  (1.2T attached against 1.2T of fabric - non-blocking)"),
+            "{s}"
+        );
+        let s = rendered(16, &["+15", "@100G", "-48@25G"]);
+        assert!(s.contains("Per leaf       1:1.25"), "{s}");
+        // A ratio nobody can work out is not printed as though they could.
+        let s = rendered(16, &["+2", "-48@25G"]);
+        assert!(s.contains("attached, fabric unknown"), "{s}");
+        // And a fabric with nothing attached has no section at all.
+        assert!(!rendered(8, &["@100G"]).contains("Oversubscription"));
+    }
+
+    #[test]
+    fn a_budget_breaks_down_a_switch_whose_ports_differ() {
+        let s = rendered(16, &["+2", "@100G", "-48@25G", "=56"]);
+        assert!(
+            s.contains("each leaf   50 of 56 ports (2 at 100G, 48 at 25G)"),
+            "{s}"
+        );
+        let s = rendered(16, &["+2", "@100G", "-48@25G", "=48"]);
+        assert!(s.contains("no - each leaf is 2 short"), "{s}");
+    }
+
+    #[test]
     fn json_carries_exact_numbers() {
         let r = report(8, &["@100G", "%400G", "=32", "."], Media::Optic);
         let mut out = Vec::new();
@@ -781,5 +1065,28 @@ mod tests {
         }
         // Never coloured and never grouped: it is parsed, not read.
         assert!(!s.contains('\x1b') && !s.contains("2,800"));
+    }
+
+    #[test]
+    fn json_carries_the_servers_and_the_ratio() {
+        let r = report(16, &["+2", "@100G", "%400G", "-48@25G"], Media::Optic);
+        let mut out = Vec::new();
+        json(&mut out, &r, &opts(Style::plain())).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        for want in [
+            "\"topology\": \"leaf-spine\"",
+            "\"spines\": 2",
+            "\"arrangement\": \"split-upstream\"",
+            "\"role\": \"leaf\"",
+            "\"ports\": 48",
+            "\"switch_ports\": 48",
+            "\"attached_mbps\": 1200000",
+            "\"fabric_mbps\": 200000",
+            "\"blocking\": true",
+        ] {
+            assert!(s.contains(want), "{want} missing from {s}");
+        }
+        // A spine has no servers, and says so rather than saying zero.
+        assert!(s.contains("\"servers\": null"), "{s}");
     }
 }

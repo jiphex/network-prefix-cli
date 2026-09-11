@@ -14,7 +14,10 @@ OPERATORS:
   %M            break each switch port into M lanes
   %SPEED        the same, worked out from the port speed instead of counted
   xK, *K        K parallel links between each pair (use the x form in zsh)
-  /SHAPE        /mesh (the default), /ring or /star
+  /SHAPE        /mesh (the default), /ring, /star or /leaf-spine
+  +S            S spines above the leaves, which makes it a leaf-spine
+  -N@SPEED      N server ports on each leaf, at that speed
+  -N@SPEED%P    the same, out of P ports split into lanes to reach them
   =N            each switch has N ports - does the plan fit?
   .             the patch schedule: which port on which switch reaches which
 
@@ -25,9 +28,17 @@ OPERATORS:
 
   Where every switch is the same shape - a mesh or a ring - both ends of a
   link are lanes of a broken-out port, so they meet in a patch field and the
-  optics sit at the trunk ports. A star is the other arrangement: its hub
-  breaks out and each spoke takes a whole port, which is what a DAC or AOC
-  splitter cable is built for.
+  optics sit at the trunk ports. Where they are not - a star's hub, a
+  leaf-spine's spines - the upstream end breaks out and each switch below it
+  takes a whole port, which is what a DAC or AOC splitter cable is built for
+  and what a 400G spine port fanned out to four 100G leaves is.
+
+  Server ports are the other half of an oversubscription ratio: what is
+  attached to a switch against what leaves it. They land on whichever
+  switches are the fabric's edge - the leaves of a leaf-spine, the spokes of
+  a star, every switch of a mesh or a ring - and they count against a port
+  budget alongside the fabric's own ports, because they come out of the same
+  front panel.
 
 EXAMPLES:
   fabrictool 8
@@ -50,6 +61,15 @@ EXAMPLES:
 
   fabrictool 48 /star @25G %100G --media=dac
         one hub, 25G to each spoke, split four ways out of its 100G ports
+
+  fabrictool 16 +2 @100G %400G -48@25G
+        sixteen leaves under two spines, 400G spine ports fanned out to 100G
+        uplinks, 48 servers at 25G under each leaf - and what that is
+        oversubscribed by
+
+  fabrictool 16 +4 @100G %400G -48@25G%100G =56
+        the same with four spines and the servers arriving on split 100G
+        ports, against the 56 ports a leaf actually has
 
   fabrictool 8 @100G %400G . --all
         the schedule to take to the rack, every link of it
@@ -85,14 +105,13 @@ EXIT STATUS:
     max_term_width = 96
 )]
 struct Cli {
-    /// How many switches to connect, e.g. 8
-    ///
-    /// Taken as text and converted here rather than by clap, so that a
-    /// mistyped count leaves by the same exit code as a mistyped operator.
+    /// How many switches to connect - leaves, when +S puts spines above them
+    // Taken as text and converted in run() rather than by clap, so that a
+    // mistyped count leaves by the same exit code as a mistyped operator.
     #[arg(value_name = "SWITCHES")]
     switches: String,
 
-    /// Operators: @SPEED, %M, xK, /mesh, =N, .  (see below)
+    /// Operators: @SPEED, %M, xK, /mesh, +S, -N@SPEED, =N, .  (see below)
     #[arg(value_name = "OP", allow_hyphen_values = true)]
     ops: Vec<String>,
 

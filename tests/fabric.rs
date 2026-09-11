@@ -175,6 +175,77 @@ fn under_quiet_a_port_budget_is_the_exit_status() {
 }
 
 #[test]
+fn a_leaf_spine_counts_its_two_populations_apart() {
+    let s = stdout(&["16", "+2", "@100G", "%400G", "-48@25G", "--color=never"]);
+    assert!(
+        s.starts_with("16 leaves + 2 spines  -  leaf-spine at 100G"),
+        "{s}"
+    );
+    assert!(s.contains("Links          32"), "{s}");
+    assert!(s.contains("4 x 400G on each spine"), "{s}");
+    assert!(s.contains("2 x 100G on each leaf"), "{s}");
+    assert!(s.contains("Server ports   48 x 25G on each leaf"), "{s}");
+    assert!(s.contains("Per leaf       6:1"), "{s}");
+    // A 400G spine port reaches four leaves, so four ports carry sixteen.
+    assert!(s.contains("8  400G transceiver"), "{s}");
+    assert!(s.contains("32  100G transceiver"), "{s}");
+}
+
+#[test]
+fn uplinks_change_the_ratio_and_nothing_else_about_the_servers() {
+    let ratio = |spines: &str| {
+        let s = stdout(&["16", spines, "@100G", "-48@25G", "--color=never"]);
+        s.lines()
+            .find(|l| l.trim_start().starts_with("Per leaf"))
+            .map(|l| l.split_whitespace().nth(2).unwrap().to_string())
+            .expect("a ratio")
+    };
+    assert_eq!(ratio("+2"), "6:1");
+    assert_eq!(ratio("+4"), "3:1");
+    assert_eq!(ratio("+6"), "2:1");
+    assert_eq!(ratio("+12"), "1:1");
+}
+
+#[test]
+fn server_ports_count_against_the_port_budget() {
+    // Two uplinks and 48 servers is 50 ports, whatever they are facing.
+    let s = stdout(&["16", "+2", "@100G", "-48@25G", "=56", "--color=never"]);
+    assert!(
+        s.contains("each leaf   50 of 56 ports (2 at 100G, 48 at 25G)"),
+        "{s}"
+    );
+    assert_eq!(
+        run(&["16", "+2", "@100G", "-48@25G", "=48", "-q"])
+            .status
+            .code(),
+        Some(4),
+        "50 ports do not fit in 48"
+    );
+    // Arriving on split ports, the same servers take twelve ports, not 48.
+    let s = stdout(&["16", "+2", "@100G", "-48@25G%100G", "=56", "--color=never"]);
+    assert!(s.contains("each leaf   14 of 56 ports"), "{s}");
+}
+
+#[test]
+fn servers_hang_off_the_edge_of_whatever_shape_it_is() {
+    assert!(stdout(&["8", "-24@10G", "@100G", "--color=never"]).contains("on each switch"));
+    assert!(stdout(&["8", "/star", "-24@10G", "@100G", "--color=never"]).contains("on each spoke"));
+    assert!(stdout(&["8", "+2", "-24@10G", "@100G", "--color=never"]).contains("on each leaf"));
+    // Nothing hangs off a fabric nobody mentioned servers for.
+    assert!(!stdout(&["8", "@100G"]).contains("Oversubscription"));
+}
+
+#[test]
+fn the_schedule_names_spines_and_leaves() {
+    let s = stdout(&["4", "+2", ".", "--all", "-q"]);
+    assert_eq!(
+        s,
+        "spine1:1 leaf1:1\nspine1:2 leaf2:1\nspine1:3 leaf3:1\nspine1:4 leaf4:1\n\
+         spine2:1 leaf1:2\nspine2:2 leaf2:2\nspine2:3 leaf3:2\nspine2:4 leaf4:2\n"
+    );
+}
+
+#[test]
 fn a_fabric_that_cannot_be_built_is_not_the_same_as_bad_input() {
     // A splitter DAC into a mesh: coherent, and nothing to plug it into.
     let out = run(&["8", "@100G", "%400G", "--media=dac"]);
@@ -192,6 +263,10 @@ fn a_fabric_that_cannot_be_built_is_not_the_same_as_bad_input() {
         vec!["8", "%0"],
         vec!["8", "@40G", "%100G"],
         vec!["8", "@100G", "@400G"],
+        vec!["8", "/mesh", "+2"],
+        vec!["8", "+0"],
+        vec!["8", "-48"],
+        vec!["8", "-48@banana"],
     ] {
         assert_eq!(run(&args).status.code(), Some(1), "{args:?}");
     }
@@ -218,6 +293,8 @@ fn the_report_never_argues_with_itself() {
         vec!["7", "/star", ".", "--all"],
         vec!["5", "x3", ".", "--all"],
         vec!["6", "@100G", "%400G", ".", "--all"],
+        vec!["6", "+2", ".", "--all"],
+        vec!["6", "+3", "@100G", "%400G", "-24@10G", ".", "--all"],
     ] {
         let mut with_colour = args.clone();
         with_colour.push("--color=never");

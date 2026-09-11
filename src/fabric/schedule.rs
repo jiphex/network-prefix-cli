@@ -15,16 +15,24 @@ use std::fmt;
 /// the port is broken out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct End {
+    /// Where the switch sits in the plan's own order, 1-based. Spines come
+    /// before leaves, so this is not what the switch is called.
     pub switch: u64,
+    /// What it is called: `sw` in a shape where every switch is alike, and
+    /// `spine` or `leaf` where they are not, each numbered within its own
+    /// population so `leaf1` is the first leaf rather than the first switch.
+    pub prefix: &'static str,
+    pub number: u64,
     pub port: u64,
     pub lane: Option<u64>,
 }
 
 impl fmt::Display for End {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}:{}", self.prefix, self.number, self.port)?;
         match self.lane {
-            Some(lane) => write!(f, "sw{}:{}/{lane}", self.switch, self.port),
-            None => write!(f, "sw{}:{}", self.switch, self.port),
+            Some(lane) => write!(f, "/{lane}"),
+            None => Ok(()),
         }
     }
 }
@@ -36,11 +44,18 @@ pub struct Patch {
     pub b: End,
 }
 
-/// The pairs of switches a topology joins, in a fixed order: lowest switch
-/// first, and its peers in order after it.
+/// The pairs of switches a topology joins, in a fixed order: the upstream end
+/// first where there is one, and its peers in order after it.
 struct Links {
-    switches: u64,
     topology: Topology,
+    /// Every switch, spines included.
+    total: u64,
+    /// Where the first end stops: the switch count in a shape of peers, and
+    /// the spine count in a leaf-spine.
+    stop: u64,
+    /// Where the second end starts over: 0 in a shape of peers, and the first
+    /// leaf in a leaf-spine.
+    floor: u64,
     per_pair: u64,
     a: u64,
     b: u64,
@@ -51,7 +66,7 @@ impl Iterator for Links {
     type Item = (u64, u64);
 
     fn next(&mut self) -> Option<(u64, u64)> {
-        if self.a >= self.switches {
+        if self.a >= self.stop {
             return None;
         }
         let pair = (self.a, self.b);
@@ -66,18 +81,27 @@ impl Iterator for Links {
 
 impl Links {
     fn new(plan: &Plan) -> Links {
+        let total = plan.switches;
+        let spines = plan.spines;
         let mut links = Links {
-            switches: plan.switches,
             topology: plan.topology,
+            total,
+            stop: match plan.topology {
+                Topology::LeafSpine => spines,
+                // A ring of two would otherwise close back over the pair it
+                // has already joined, which is the same link a second time.
+                Topology::Ring if total == 2 => 1,
+                _ => total,
+            },
+            floor: spines,
             per_pair: plan.per_pair,
             a: 0,
             b: 1,
             done: 0,
         };
-        // A ring of two would otherwise close back over the pair it has
-        // already joined, which is the same link a second time.
-        if plan.topology == Topology::Ring && plan.switches == 2 {
-            links.switches = 1;
+        if plan.topology == Topology::LeafSpine {
+            // Spine 1 to every leaf, then spine 2, and so on.
+            links.b = spines;
         }
         links
     }
@@ -86,24 +110,32 @@ impl Links {
         match self.topology {
             Topology::Mesh => {
                 self.b += 1;
-                if self.b >= self.switches {
+                if self.b >= self.total {
                     self.a += 1;
                     self.b = self.a + 1;
                 }
-                if self.b >= self.switches {
-                    self.a = self.switches;
+                if self.b >= self.total {
+                    self.a = self.stop;
                 }
             }
             // Each switch to the next, and the last back to the first.
             Topology::Ring => {
                 self.a += 1;
-                self.b = (self.a + 1) % self.switches;
+                self.b = (self.a + 1) % self.total;
             }
             // Switch 1 is the hub; every other switch hangs off it.
             Topology::Star => {
                 self.b += 1;
-                if self.b >= self.switches {
-                    self.a = self.switches;
+                if self.b >= self.total {
+                    self.a = self.stop;
+                }
+            }
+            // Every leaf to every spine, a spine at a time.
+            Topology::LeafSpine => {
+                self.b += 1;
+                if self.b >= self.total {
+                    self.a += 1;
+                    self.b = self.floor;
                 }
             }
         }
@@ -113,8 +145,10 @@ impl Links {
 /// The patch schedule: every link, with the port each end lands in.
 pub struct Schedule {
     links: Links,
-    /// Lanes to a port, per switch, so a star's hub can differ from its
-    /// spokes.
+    topology: Topology,
+    spines: u64,
+    /// Lanes to a port, per switch, so a star's hub and a leaf-spine's spines
+    /// can differ from what they reach.
     lanes: Vec<u64>,
     /// Link ends already assigned on each switch, which is what makes the
     /// next port number.
@@ -123,16 +157,24 @@ pub struct Schedule {
 
 impl Schedule {
     pub fn new(plan: &Plan) -> Schedule {
+        // Which switches break a port out: all of them, or the upstream ones.
+        let upstream = match plan.topology {
+            Topology::LeafSpine => plan.spines,
+            Topology::Star => 1,
+            _ => 0,
+        };
         let lanes = (0..plan.switches)
             .map(|i| match plan.arrangement {
                 Arrangement::Straight => 1,
                 Arrangement::SplitBothEnds => plan.lanes,
-                Arrangement::SplitAtHub if i == 0 => plan.lanes,
-                Arrangement::SplitAtHub => 1,
+                Arrangement::SplitUpstream if i < upstream => plan.lanes,
+                Arrangement::SplitUpstream => 1,
             })
             .collect();
         Schedule {
             links: Links::new(plan),
+            topology: plan.topology,
+            spines: plan.spines,
             lanes,
             used: vec![0; plan.switches as usize],
         }
@@ -143,8 +185,15 @@ impl Schedule {
         let lanes = self.lanes[i];
         let n = self.used[i];
         self.used[i] += 1;
+        let (prefix, number) = match self.topology {
+            Topology::LeafSpine if switch < self.spines => ("spine", switch + 1),
+            Topology::LeafSpine => ("leaf", switch - self.spines + 1),
+            _ => ("sw", switch + 1),
+        };
         End {
             switch: switch + 1,
+            prefix,
+            number,
             port: n / lanes + 1,
             lane: (lanes > 1).then_some(n % lanes + 1),
         }
@@ -252,6 +301,32 @@ mod tests {
     }
 
     #[test]
+    fn a_leaf_spine_wires_every_leaf_to_every_spine() {
+        assert_eq!(
+            lines(3, &["+2"]),
+            [
+                "spine1:1 leaf1:1",
+                "spine1:2 leaf2:1",
+                "spine1:3 leaf3:1",
+                "spine2:1 leaf1:2",
+                "spine2:2 leaf2:2",
+                "spine2:3 leaf3:2",
+            ]
+        );
+        // Only the spines break out, and a spine port carries four leaves.
+        assert_eq!(
+            lines(5, &["+1", "@100G", "%400G"]),
+            [
+                "spine1:1/1 leaf1:1",
+                "spine1:1/2 leaf2:1",
+                "spine1:1/3 leaf3:1",
+                "spine1:1/4 leaf4:1",
+                "spine1:2/1 leaf5:1",
+            ]
+        );
+    }
+
+    #[test]
     fn parallel_links_are_listed_one_after_another() {
         assert_eq!(
             lines(3, &["x2"]),
@@ -281,9 +356,16 @@ mod tests {
             vec!["@100G", "%4"],
             vec!["@100G", "%4", "/star"],
             vec!["@100G", "%8", "/ring"],
+            vec!["+1"],
+            vec!["+2"],
+            vec!["+3", "x2"],
+            vec!["@100G", "%4", "+2"],
+            vec!["@100G", "%400G", "+2", "-48@25G"],
         ] {
-            for switches in 2..14u64 {
-                let plan = plan_of(switches, &args);
+            for count in 2..14u64 {
+                let plan = plan_of(count, &args);
+                let switches = plan.switches;
+                let spines = plan.spines;
                 let mut ports = vec![0u64; switches as usize];
                 let mut ends = vec![0u64; switches as usize];
                 let mut links = 0;
@@ -295,18 +377,21 @@ mod tests {
                         ends[i] += 1;
                     }
                 }
-                assert_eq!(links, plan.links, "{switches} {args:?}: link count");
+                assert_eq!(links, plan.links, "{count} {args:?}: link count");
                 for side in &plan.sides {
-                    // The hub is switch 1; everything else is a spoke, and in
-                    // the shapes with one kind of switch they are all alike.
+                    // Spines are numbered first, then leaves. A star's hub is
+                    // switch 1 and its spokes are the rest, and in the shapes
+                    // with one kind of switch they are all alike.
                     let range: Vec<usize> = match side.role {
                         plan::Role::Hub => vec![0],
                         plan::Role::Spoke => (1..switches as usize).collect(),
+                        plan::Role::Spine => (0..spines as usize).collect(),
+                        plan::Role::Leaf => (spines as usize..switches as usize).collect(),
                         plan::Role::Every => (0..switches as usize).collect(),
                     };
                     for i in range {
-                        assert_eq!(ends[i], side.degree, "{switches} {args:?}: ends on sw{i}");
-                        assert_eq!(ports[i], side.ports, "{switches} {args:?}: ports on sw{i}");
+                        assert_eq!(ends[i], side.degree, "{count} {args:?}: ends on sw{i}");
+                        assert_eq!(ports[i], side.ports, "{count} {args:?}: ports on sw{i}");
                     }
                 }
             }
@@ -316,7 +401,12 @@ mod tests {
     /// Nothing is plugged into a port twice: a lane carries one link end.
     #[test]
     fn every_lane_is_used_once() {
-        for args in [vec![], vec!["@100G", "%4"], vec!["/ring", "x2"]] {
+        for args in [
+            vec![],
+            vec!["@100G", "%4"],
+            vec!["/ring", "x2"],
+            vec!["@100G", "%4", "+2"],
+        ] {
             for switches in 2..12u64 {
                 let plan = plan_of(switches, &args);
                 let mut seen = std::collections::HashSet::new();

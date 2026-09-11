@@ -35,6 +35,9 @@ pub enum Topology {
     Ring,
     /// One switch in the middle, everything else hanging off it.
     Star,
+    /// Every leaf to every spine, and nothing to anything else. The shape a
+    /// rack of switches with servers under them actually has.
+    LeafSpine,
 }
 
 impl Topology {
@@ -43,6 +46,7 @@ impl Topology {
             Topology::Mesh => "full mesh",
             Topology::Ring => "ring",
             Topology::Star => "star",
+            Topology::LeafSpine => "leaf-spine",
         }
     }
 
@@ -53,6 +57,7 @@ impl Topology {
             Topology::Mesh => "every switch to every other",
             Topology::Ring => "each switch to two neighbours",
             Topology::Star => "one hub, everything else hanging off it",
+            Topology::LeafSpine => "every leaf to every spine",
         }
     }
 
@@ -61,6 +66,9 @@ impl Topology {
             "mesh" | "full-mesh" | "fullmesh" | "full" => Some(Topology::Mesh),
             "ring" | "loop" => Some(Topology::Ring),
             "star" | "hub" | "hub-and-spoke" => Some(Topology::Star),
+            "leaf-spine" | "leafspine" | "spine-leaf" | "clos" | "spine" => {
+                Some(Topology::LeafSpine)
+            }
             _ => None,
         }
     }
@@ -69,6 +77,15 @@ impl Topology {
 impl fmt::Display for Topology {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+impl Topology {
+    /// Whether the switches all have the same job. A mesh and a ring are one
+    /// population; a star and a leaf-spine are two, and almost every number
+    /// in the report has to be given per population rather than per switch.
+    pub fn is_uniform(&self) -> bool {
+        matches!(self, Topology::Mesh | Topology::Ring)
     }
 }
 

@@ -14,7 +14,7 @@ programs, so a change to one of those modules is a change to both tools.
 
 ```
 cargo build
-cargo test --locked --all-targets      # 253 tests: 168 unit, 9 CLI, 76 end-to-end
+cargo test --locked --all-targets      # 271 tests: 181 unit, 9 CLI, 81 end-to-end
 cargo clippy --locked --all-targets
 cargo fmt --all --check
 ```
@@ -150,6 +150,9 @@ The fabric side has three of its own, and the first two found real bugs:
   shape and at every size.
 - Lanes are provisioned in whole ports, so `ports x lanes` is always **used
   plus spare**. A ports figure that forgets a remainder breaks this.
+- Every port a switch gives up is counted **once**: a side's total is its
+  fabric ports plus its server ports, and that total is what a port budget is
+  answered against.
 - The schedule and the plan are the **same fabric**: as many lines as the plan
   counted links, as many ends on a switch as it counted ports, and no lane
   plugged into twice.
@@ -177,18 +180,37 @@ state:
   peers, which is the whole reason it exists.
 
 The arrangement falls out of that, and the arrangement decides the bill of
-materials. In a mesh or a ring every switch is the same, so both ends of a
+materials. Where every switch is the same - a mesh or a ring - both ends of a
 link are lanes: they meet in a patch field, and the optics sit at the trunk
-ports. In a star the hub is the odd one out, so it breaks out and each spoke
-gives up a whole port - which is the one arrangement a DAC or AOC splitter can
-be used in, because its lanes end in modules and a module needs a port.
+ports. Where they are not - a star's hub, a leaf-spine's spines - the upstream
+end breaks out and everything below it gives up a whole port, which is the one
+arrangement a DAC or AOC splitter can be used in, because its lanes end in
+modules and a module needs a port. `Topology::is_uniform` is what that turns
+on, so a new shape decides its arrangement by answering that one question.
 
-That last point is why `--media=dac` with a broken-out mesh exits 3 rather
-than printing a plan. It is a real constraint, not a simplification, and the
-error names both ways round it. What the model does not cover is a switch with
-ports at two speeds, where a splitter could fan out into native ports in a
-mesh as well. Adding that means asking how many ports of each speed a switch
-has, which is a question the command line does not currently ask.
+That is why `--media=dac` with a broken-out mesh exits 3 rather than printing
+a plan. It is a real constraint, not a simplification, and the error names both
+ways round it.
+
+Servers are the other half of an oversubscription ratio, and three rules keep
+them honest:
+
+- they hang off the fabric's **edge** - `Shape::edge` - which is the leaves of
+  a leaf-spine, the spokes of a star, and every switch of a mesh or a ring;
+- their ports are the **same lane arithmetic** as the fabric's, because a 100G
+  port split four ways is four 25G servers exactly as a 400G port split four
+  ways is four 100G leaves;
+- the ratio is about the **servers**, not the ports they arrive on, so
+  breaking out the access side changes what it costs in ports and leaves the
+  ratio alone.
+
+What is deliberately not counted is the cabling to the servers. The ports are
+spent here and the ratio depends on them, but the cables and the NIC optics
+are bought with the servers rather than with the fabric, so the bill of
+materials stops at the leaf. What the model still does not cover is a switch
+with ports at two speeds *facing the fabric*, where a splitter could fan out
+into native ports in a mesh as well. Adding that means asking how many ports of
+each speed a switch has, which is a question the command line does not ask.
 
 ## Arithmetic traps
 
@@ -232,7 +254,14 @@ those, and both partition argv in `arrange()` before clap sees it.
 fabrictool's `xK` is the one operator with no sigil at all, so `looks_like_op`
 tells it from an ordinary word by the digit after the `x`. `*K` means the same
 thing and is what a shell globs, which is why both exist - as `-64x2` does on
-the prefix side.
+the prefix side. `-48@25G` is told from `-n` and `--json` the same way the
+prefix side does it: a digit has to follow the `-`.
+
+`+S` carries the shape as well as a number. Saying how many spines there are
+is what makes a fabric a leaf-spine, because there is no other shape the
+answer fits into, and `/leaf-spine +2` says the same thing twice. Giving a
+spine count to a shape that has none is an error rather than something to
+quietly ignore.
 
 `:` is doing double duty, as the separator in `%a:b:c` and as the start of a
 carve's name, and IPv6 addresses are mostly colons. Two rules keep it
