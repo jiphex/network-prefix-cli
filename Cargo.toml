@@ -2,12 +2,16 @@
 name = "prefixtool"
 version = "1.1.0"
 edition = "2024"
-description = "Inspect, split and carve up IPv4 and IPv6 prefixes"
+description = "Inspect IP prefixes, and size the cabling between switches"
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/jiphex/network-prefix-cli"
 categories = ["command-line-utilities", "network-programming"]
 keywords = ["ipv6", "subnet", "prefix", "cidr", "network"]
+
+# Two binaries out of one package: src/main.rs is prefixtool, and
+# src/bin/fabrictool.rs is the other. Both are found by Cargo without being
+# spelled out, and both share src/lib.rs.
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }

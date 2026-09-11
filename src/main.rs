@@ -1,17 +1,7 @@
 //! prefixtool - inspect, split and carve up IPv4/IPv6 prefixes.
 
-mod carve;
-mod info;
-mod json;
-mod num;
-mod ops;
-mod render;
-mod report;
-mod style;
-mod wellknown;
-mod zones;
-
 use clap::Parser;
+use prefixtool::{carve, ops, render, report, style};
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
 

@@ -1,17 +1,28 @@
-# prefixtool
+# prefixtool and fabrictool
 
 [![CI](https://github.com/jiphex/network-prefix-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/jiphex/network-prefix-cli/actions/workflows/ci.yml)
 
-A single-binary CLI for inspecting, splitting and carving up IPv4 and IPv6
-prefixes. Built for the moment you are staring at an allocation and need to
-know how it divides, what fits inside it, and what is left over afterwards.
+Two CLIs for the two things you end up doing on a whiteboard before anything
+gets built.
+
+**`prefixtool`** inspects, splits and carves up IPv4 and IPv6 prefixes. Built
+for the moment you are staring at an allocation and need to know how it
+divides, what fits inside it, and what is left over afterwards.
+
+**`fabrictool`** sizes the cabling between switches. Built for the moment you
+are staring at a rack diagram and need to know how many cables, transceivers
+and ports a mesh of eight of them actually costs - and whether breaking a 400G
+port into four 100G lanes makes that better or worse.
+
+They ship together, in one archive, and read the same way: a thing to work on,
+then operators for the questions you want answered about it.
 
 ## Install
 
-Grab a binary for your platform from the
+Grab the archive for your platform from the
 [releases page](https://github.com/jiphex/network-prefix-cli/releases), unpack
-it and put `prefixtool` on your `PATH`. Each archive ships with a `.sha256`
-next to it. Builds are published for Linux (x86-64 gnu and static musl,
+it and put `prefixtool` and `fabrictool` on your `PATH`. Each archive ships
+with a `.sha256` next to it. Builds are published for Linux (x86-64 gnu and static musl,
 arm64), macOS (Intel and Apple silicon) and Windows.
 
 ### Homebrew
@@ -23,8 +34,9 @@ brew install jiphex/network-prefix-cli/prefixtool
 
 The formula lives in this repository under `Formula/`, so the tap needs the
 repository URL spelled out - Homebrew otherwise goes looking for a repository
-called `homebrew-network-prefix-cli`. It installs the prebuilt binary for your
-platform, so there is no Rust toolchain and no compile.
+called `homebrew-network-prefix-cli`. It is named after `prefixtool` and
+installs both binaries, prebuilt for your platform, so there is no Rust
+toolchain and no compile.
 
 Homebrew clears the quarantine flag itself, so the macOS note below does not
 apply to a `brew install`.
@@ -35,6 +47,7 @@ The repository is a flake, so it can be run without installing anything:
 
 ```
 nix run github:jiphex/network-prefix-cli -- 2001:db8::/52 -56 -64x2
+nix run github:jiphex/network-prefix-cli#fabrictool -- 8 @100G %400G
 ```
 
 Or built, or brought into a profile or a NixOS configuration:
@@ -62,6 +75,7 @@ that flag:
 ```
 tar xzf prefixtool-<tag>-aarch64-apple-darwin.tar.gz
 ./prefixtool --version
+./fabrictool --version
 ```
 
 If you downloaded through a browser and hit *"Apple could not verify..."*, the
@@ -71,9 +85,9 @@ macOS archives bundle a script for it:
 ./macos-unquarantine.sh
 ```
 
-It clears the quarantine flag, repairs the ad-hoc signature if it needs it, and
-runs the binary to prove the result works. The equivalent by hand is
-`xattr -d com.apple.quarantine prefixtool`.
+It does both binaries: clears the quarantine flag, repairs the ad-hoc signature
+if it needs it, and runs each one to prove the result works. The equivalent by
+hand is `xattr -d com.apple.quarantine prefixtool fabrictool`.
 
 Or build it yourself:
 
@@ -86,9 +100,10 @@ From a checkout:
 ```
 cargo build --release
 ./target/release/prefixtool 2001:db8::/52 -56 -64x2
+./target/release/fabrictool 8 @100G %400G
 ```
 
-## Usage
+## prefixtool
 
 ```
 prefixtool [OPTIONS] <PREFIX> [OP]...
@@ -153,7 +168,7 @@ checking for one should never be handed the other. With several `=` operators,
 any one outside is a fail. The other output modes print the answer for you to
 read, so they stay at 0.
 
-## What it tells you
+## What prefixtool tells you
 
 ### Inspecting a prefix
 
@@ -575,6 +590,323 @@ $ prefixtool 10.0.0.0/24 -24 -30 >/dev/null; echo $?
 3
 ```
 
+## fabrictool
+
+```
+fabrictool [OPTIONS] <SWITCHES> [OP]...
+```
+
+`SWITCHES` is how many switches there are to connect. A bare count answers in
+links, ports and cables; each operator adds something more it can say.
+
+### Operators
+
+| Operator | Meaning |
+| --- | --- |
+| `@SPEED` | The speed of each link: `@100G`, `@25G`, `@1.6T` |
+| `%M` | Break each switch port into `M` lanes |
+| `%SPEED` | The same, worked out from the port speed instead of counted |
+| `xK`, `*K` | `K` parallel links between each pair |
+| `/SHAPE` | `/mesh` (the default), `/ring` or `/star` |
+| `=N` | Each switch has `N` ports - does the plan fit? |
+| `.` | The patch schedule: which port on which switch reaches which |
+
+A bare number after `%` is a lane count and a number with a unit is a port
+speed, so `%4` and `%400G` are different questions and neither has to be
+guessed at. Use the `x` form of a link count (`x2`) in `zsh`, which otherwise
+tries to glob the `*`. Flags and operators can be given in any order.
+
+### Options
+
+| Flag | Meaning |
+| --- | --- |
+| `-n`, `--limit <N>` | Links to list in the patch schedule (default 8) |
+| `-a`, `--all` | List every link, however many there are |
+| `--media <kind>` | What the links are made of: `optic` (default), `aoc` or `dac` |
+| `-q`, `--quiet` | Print the bill of materials only, one item per line |
+| `--json` | Emit a JSON object instead of a report |
+| `--color <when>` | `auto` (default), `always` or `never` |
+
+### Exit status
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Bad switch count or operator |
+| 3 | The fabric cannot be built as asked |
+| 4 | `--quiet`, and an `=N` port budget does not fit |
+
+**3** is the code for a request that makes sense and still cannot be built - a
+splitter cable with nothing at the far end to plug into, say. It is separate
+from bad input for the same reason **4** is: a script should never read a typo
+as a confident no.
+
+### Counting a mesh
+
+A full mesh is the shape whose cable count people get wrong, because it grows
+with the square of the switch count rather than with the switch count. Eight
+of them is twenty-eight links and fifty-six transceivers:
+
+```
+$ fabrictool 8 @100G
+8 switches  -  full mesh at 100G
+
+  Switches       8
+  Topology       full mesh  (every switch to every other)
+  Links          28  (1 link between each pair)
+  Link speed     100G
+  Per pair       100G
+  Per switch     7 links, 700G
+  Ports          7 x 100G on each switch
+  Bisection      1.6T  (16 links across the middle)
+  Fabric total   2.8T  (28 x 100G, one direction)
+  Hops           1  (worst case, switch to switch)
+  Resilience     6 links may fail before the fabric splits
+
+Cabling 8 switches at 100G
+  Arrangement    one 100G cable per link, a transceiver in each end
+
+  Qty  Item                     Where
+   56  100G transceiver         one in each end of every link
+   28  duplex fibre patch lead  one per link
+   56  100G port                7 ports on each of 8 switches
+```
+
+Everything after the first two lines is a consequence of the shape.
+**Bisection** is what crosses the middle when the fabric is cut into halves,
+which is the bandwidth available when the traffic is as awkward as it can be.
+**Resilience** is how many links can fail before some switch cannot reach some
+other. **Hops** is the worst case, switch to switch.
+
+### Breaking a port out
+
+Nobody buys 100G switches to build that mesh any more. They buy 400G ports and
+split each one into four 100G lanes, each lane going to a different peer. `%`
+says so, either as a lane count (`%4`) or as the port speed to work it out
+from (`%400G`):
+
+```
+$ fabrictool 8 @100G %400G
+8 switches  -  full mesh at 100G
+
+  Switches       8
+  Topology       full mesh  (every switch to every other)
+  Links          28  (1 link between each pair)
+  Link speed     100G
+  Per pair       100G
+  Per switch     7 links, 700G
+  Ports          2 x 400G on each switch  (4 lanes each: 7 used, 1 spare)
+  Bisection      1.6T  (16 links across the middle)
+  Fabric total   2.8T  (28 x 100G, one direction)
+  Hops           1  (worst case, switch to switch)
+  Resilience     6 links may fail before the fabric splits
+
+Cabling 8 switches at 100G
+  Arrangement    400G ports split 4 ways at both ends, lanes joined in a patch field
+  Trunk ports    16  (64 lanes, 56 used, 8 spare)
+
+  Qty  Item                             Where
+   16  400G transceiver                 one in each trunk port
+   16  400G to 4x100G breakout harness  one per trunk port, its lanes fanned out to that many peers
+   28  duplex coupler                   one per link, where its two lanes meet in the patch field
+   16  400G port                        2 ports on each of 8 switches
+```
+
+The same twenty-eight links, but sixteen transceivers instead of fifty-six,
+and two ports a switch instead of seven. The arrangement line is the part
+worth agreeing with before trusting the rest: in a mesh every switch has the
+same ports, so **both** ends of a link are lanes and they meet in a patch
+field. The eight spare lanes are the price of seven peers not dividing by
+four.
+
+### Splitters, and where they can go
+
+A DAC or AOC splitter is one assembly with its ends moulded on, so its lanes
+have to land in ports that run at the lane speed. That is a star: the hub
+breaks out, and each spoke gives up a whole port.
+
+```
+$ fabrictool 48 /star @25G %100G --media=dac
+48 switches  -  star at 25G
+
+  Switches       48
+  Topology       star  (one hub, everything else hanging off it)
+  Links          47  (1 link from the hub to each spoke)
+  Link speed     25G
+  Per spoke      25G
+  Per switch     the hub 47 links, 1.175T
+                 each spoke 1 link, 25G
+  Ports          12 x 100G on the hub  (4 lanes each: 47 used, 1 spare)
+                 1 x 25G on each spoke
+  Bisection      600G  (24 links across the middle)
+  Fabric total   1.175T  (47 x 25G, one direction)
+  Hops           2  (worst case, switch to switch)
+  Resilience     any single link failure splits the fabric
+
+Cabling 48 switches at 25G
+  Arrangement    the hub's 100G ports split 4 ways, a whole 25G port at each spoke
+  Hub ports      12  (48 lanes, 47 used, 1 spare)
+
+  Qty  Item                        Where
+   12  100G to 4x25G DAC splitter  one per hub port, a lane to each of 4 spokes
+   12  100G port                   12 ports on the hub
+   47  25G port                    1 port on each of 47 spokes
+```
+
+Ask for the same cable in a mesh and there is nothing for those ends to plug
+into, because every switch has the same 400G ports. That is a fabric that
+cannot be built rather than a typo, so it exits **3** and says what the two
+ways round it are:
+
+```
+$ fabrictool 8 @100G %400G --media=dac; echo $?
+fabrictool: a 4-lane DAC splitter ends in modules, and in a full mesh every
+switch has the same ports, so there is nothing at 100G for those modules to
+plug into. Use --media=optic and join the lanes in a patch field, or put the
+splitter at one end only with /star
+3
+```
+
+### Other shapes, and whether they fit
+
+`/ring` and `/star` cost far fewer cables than a mesh, and the report says what
+that buys and what it costs: a ring of twenty-four is two links across the
+middle and twelve hops from one side to the other, however fast each link is.
+
+`=N` asks the question that decides whether any of this is orderable - the
+switches have `N` ports, so does the plan fit in them?
+
+```
+$ fabrictool 48 /star @25G %100G =32
+48 switches  -  star at 25G
+
+  Switches       48
+  Topology       star  (one hub, everything else hanging off it)
+  Links          47  (1 link from the hub to each spoke)
+  Link speed     25G
+  Per spoke      25G
+  Per switch     the hub 47 links, 1.175T
+                 each spoke 1 link, 25G
+  Ports          12 x 100G on the hub  (4 lanes each: 47 used, 1 spare)
+                 1 x 25G on each spoke
+  Bisection      600G  (24 links across the middle)
+  Fabric total   1.175T  (47 x 25G, one direction)
+  Hops           2  (worst case, switch to switch)
+  Resilience     any single link failure splits the fabric
+
+Cabling 48 switches at 25G
+  Arrangement    the hub's 100G ports split 4 ways, a whole 25G port at each spoke
+  Hub ports      12  (48 lanes, 47 used, 1 spare)
+
+  Qty  Item                            Where
+   12  100G transceiver                one in each hub port
+   12  100G to 4x25G breakout harness  one per hub port, a lane to each spoke
+   47  25G transceiver                 one in each spoke port
+   12  100G port                       12 ports on the hub
+   47  25G port                        1 port on each of 47 spokes
+
+Ports on a 32-port switch
+  yes - it fits
+  the hub     12 of 32 ports at 100G, 20 spare
+  each spoke  1 of 32 ports at 25G, 31 spare
+```
+
+A star's hub and its spokes are different shapes, so they are answered
+separately. The hub is the one that runs out.
+
+### The patch schedule
+
+`.` prints what to take to the rack, in `sw<switch>:<port>/<lane>`:
+
+```
+$ fabrictool 8 @100G %400G . -n 6
+8 switches  -  full mesh at 100G
+
+  Switches       8
+  Topology       full mesh  (every switch to every other)
+  Links          28  (1 link between each pair)
+  Link speed     100G
+  Per pair       100G
+  Per switch     7 links, 700G
+  Ports          2 x 400G on each switch  (4 lanes each: 7 used, 1 spare)
+  Bisection      1.6T  (16 links across the middle)
+  Fabric total   2.8T  (28 x 100G, one direction)
+  Hops           1  (worst case, switch to switch)
+  Resilience     6 links may fail before the fabric splits
+
+Cabling 8 switches at 100G
+  Arrangement    400G ports split 4 ways at both ends, lanes joined in a patch field
+  Trunk ports    16  (64 lanes, 56 used, 8 spare)
+
+  Qty  Item                             Where
+   16  400G transceiver                 one in each trunk port
+   16  400G to 4x100G breakout harness  one per trunk port, its lanes fanned out to that many peers
+   28  duplex coupler                   one per link, where its two lanes meet in the patch field
+   16  400G port                        2 ports on each of 8 switches
+
+Patch schedule for 8 switches
+  Notation       sw<switch>:<port>/<lane>
+
+    sw1:1/1  ->  sw2:1/1
+    sw1:1/2  ->  sw3:1/1
+    sw1:1/3  ->  sw4:1/1
+    sw1:1/4  ->  sw5:1/1
+    sw1:2/1  ->  sw6:1/1
+    sw1:2/2  ->  sw7:1/1
+    ... (showing 6 of 28; use --all or -n N)
+```
+
+Lanes fill a port before the next port is used, and the order is fixed, so two
+people cabling from the same schedule wire the same fabric. `--all` prints
+every link, and the list stays lazy - piping a large one into `head` returns
+immediately.
+
+### Scripting
+
+`--quiet` prints the bill of materials, one item per line, as a quantity and a
+stable name with a tab between them:
+
+```
+$ fabrictool 8 @100G %400G -q
+16	transceiver-400G
+16	breakout-1x4-400G
+28	coupler-100G
+16	port-switch-400G
+```
+
+With `.` it prints the schedule instead, one link per line, since that is what
+was asked for:
+
+```
+$ fabrictool 4 . -q
+sw1:1 sw2:1
+sw1:2 sw3:1
+sw1:3 sw4:1
+sw2:2 sw3:2
+sw2:3 sw4:2
+sw3:3 sw4:3
+```
+
+`--json` emits everything the report knows, with every rate in megabits per
+second as an exact integer:
+
+```
+$ fabrictool 8 @100G %400G --json | jq '{links, trunk_ports, bisection: .bandwidth.bisection_mbps}'
+{
+  "links": 28,
+  "trunk_ports": 16,
+  "bisection": 1600000
+}
+```
+
+And under `--quiet` an `=N` is a question, so the exit status answers it:
+
+```
+if fabrictool 32 @100G %400G =32 -q > /dev/null; then
+    echo "it fits"
+fi
+```
+
 ## Releasing
 
 Releases are cut by merging a pull request, not by pushing a tag by hand:
@@ -596,6 +928,9 @@ For a second, explicit approval before the tag is created, add required
 reviewers to the `release` environment under Settings -> Environments. Without
 that the environment imposes no gate.
 
+Every archive carries both binaries, and the release smoke-tests both before
+publishing anything.
+
 The release also regenerates `Formula/prefixtool.rb` from the archives it just
 built and commits it to the default branch, so the Homebrew formula never
 lags behind a release. That job runs after the release is published, so if it
@@ -608,8 +943,14 @@ cargo test
 ```
 
 Unit tests cover the allocator, the operator grammar, the special-range table,
-the reverse-DNS zones and the big-number formatting; `tests/cli.rs` runs the
-real binary and checks its output and exit codes.
+the reverse-DNS zones, the big-number formatting, and, on the fabric side, the
+topology arithmetic, the rate parsing and the patch schedule. `tests/cli.rs`
+and `tests/fabric.rs` run the real binaries and check their output and exit
+codes.
+
+Several of the more valuable tests are properties rather than examples: a
+carve's blocks tile their parent exactly, an aggregate contains every input,
+and a fabric's link ends, ports and schedule all describe the same fabric.
 
 ## License
 

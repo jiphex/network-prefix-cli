@@ -1,5 +1,5 @@
 {
-  description = "Inspect, split and carve up IPv4 and IPv6 prefixes";
+  description = "Inspect IP prefixes, and size the cabling between switches";
 
   # Only nixpkgs. flake-utils would save a few lines of boilerplate below, but
   # this repository keeps its dependencies to what it actually needs, and the
@@ -42,10 +42,17 @@
         default = prefixtool;
       });
 
+      # One package, two binaries, so there are two apps to run. `nix run`
+      # with no name still means prefixtool, which is what the package is
+      # called and what mainProgram points at.
       apps = forAllSystems (pkgs: rec {
         prefixtool = {
           type = "app";
           program = "${self.packages.${pkgs.system}.prefixtool}/bin/prefixtool";
+        };
+        fabrictool = {
+          type = "app";
+          program = "${self.packages.${pkgs.system}.prefixtool}/bin/fabrictool";
         };
         default = prefixtool;
       });

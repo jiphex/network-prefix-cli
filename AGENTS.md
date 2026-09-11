@@ -1,14 +1,20 @@
-# Working on prefixtool
+# Working on prefixtool and fabrictool
 
-A CLI that inspects, splits and carves IPv4 and IPv6 prefixes. The README
-covers what it does; this covers how to change it without breaking things that
-are easy to break here.
+Two CLIs out of one package: `prefixtool` inspects, splits and carves IPv4 and
+IPv6 prefixes, and `fabrictool` sizes the cabling between switches. The README
+covers what they do; this covers how to change them without breaking things
+that are easy to break here.
+
+They share `src/lib.rs` and nothing else. What is shared is how output looks -
+colour, the JSON writer, digit grouping - and that is deliberate: the two
+reports are meant to sit in the same terminal without looking like different
+programs, so a change to one of those modules is a change to both tools.
 
 ## Commands
 
 ```
 cargo build
-cargo test --locked --all-targets      # 180 tests: 118 unit, 62 end-to-end
+cargo test --locked --all-targets      # 253 tests: 168 unit, 9 CLI, 76 end-to-end
 cargo clippy --locked --all-targets
 cargo fmt --all --check
 ```
@@ -37,6 +43,9 @@ the repository, not a detail.
 
 ## Layout
 
+`src/main.rs` is prefixtool and `src/bin/fabrictool.rs` is fabrictool; both are
+thin, and everything either of them does lives in `src/lib.rs` behind them.
+
 | Module | Holds |
 | --- | --- |
 | `ops.rs` | The operator grammar, parsed with nom |
@@ -49,14 +58,30 @@ the repository, not a detail.
 | `zones.rs` | Reverse DNS delegation zones, including RFC 2317 |
 | `json.rs` | A small JSON writer |
 
+The fabric side lives under `src/fabric/` and is the same shape one level
+down:
+
+| Module | Holds |
+| --- | --- |
+| `fabric/speed.rs` | Port and link rates, held in megabits per second |
+| `fabric/ops.rs` | The operator grammar, hand-written |
+| `fabric/plan.rs` | Topology, ports, cables, transceivers and bandwidth |
+| `fabric/schedule.rs` | Which port on which switch reaches which |
+| `fabric/render.rs` | Text, `--quiet` and `--json` output |
+
+`num.rs`, `style.rs` and `json.rs` are the three modules both tools use. The
+fabric grammar is hand-written rather than parsed with nom because it has no
+ambiguity to resolve: every operator is a sigil and a payload whose shape the
+sigil chooses. Reach for nom there only if that stops being true.
+
 ## Conventions the tests enforce
 
 **Pad before styling.** An escape sequence has no printed width, but
 `format!("{:<width$}")` counts it anyway, so styling a value before padding it
 silently shifts every column after it - and looks fine in a plain-text test.
 `colour_never_changes_the_layout` asserts that stripping the escapes from a
-coloured report gives back the uncoloured one byte for byte. Extend it when
-adding a section.
+coloured report gives back the uncoloured one byte for byte. There is one of
+these per tool, and both matter. Extend the right one when adding a section.
 
 **Tests must not depend on their environment.** A colour test once asked the
 real stdout whether it was a terminal and asserted the answer was no. It
@@ -78,6 +103,12 @@ One prefix per line, with one exception: a `%a:b:c` ratio prints one line per
 share, space-separated, because a share can be several blocks and nothing
 about the blocks says how many. Those lines ignore `-n` - truncating one is a
 wrong answer rather than a short one.
+
+fabrictool's `--quiet` is a bill of materials, `quantity<TAB>item`, or the
+patch schedule when `.` asked for one - never both at once. Two shapes of line
+in one stream is worse than either, and a reader piping it wants one of them.
+The item names are an interface: `transceiver-400G` and `breakout-1x4-400G`
+are what a script greps for, so treat renaming one as a breaking change.
 
 **Nothing prints the same addresses twice.** A carve lists what it left over,
 but `/N`, `%M` and `%a:b:c` each describe that same space themselves, so any
@@ -112,11 +143,52 @@ found real bugs when first written:
 
 When adding an operator, reach for the property first.
 
+The fabric side has three of its own, and the first two found real bugs:
+
+- Every link has two ends, and each end sits on exactly one switch: the sides'
+  degrees times their switch counts is **twice the link count**, in every
+  shape and at every size.
+- Lanes are provisioned in whole ports, so `ports x lanes` is always **used
+  plus spare**. A ports figure that forgets a remainder breaks this.
+- The schedule and the plan are the **same fabric**: as many lines as the plan
+  counted links, as many ends on a switch as it counted ports, and no lane
+  plugged into twice.
+
+The last one is what keeps `plan.rs` and `schedule.rs` honest about a
+topology. They count it in completely different ways - one with arithmetic,
+one by walking it - and a shape whose two answers disagree is a bug in
+whichever was written second.
+
 A `%a:b:c` ratio can be inexact for two unrelated reasons, and the report has
 to say which: the ratio itself may not be cuttable from any prefix (`2:1` -
 two thirds of a prefix is not a prefix), or the ratio may be fine and the
 space no longer a single block. `Shares::ratio_is_dyadic` is the test that
 separates them.
+
+## What fabrictool assumes
+
+The counting is only as good as the model, and the model is small enough to
+state:
+
+- a switch has ports of one speed, and a link runs at the link speed;
+- a port carrying links slower than itself is broken out into lanes, one lane
+  per link end;
+- a breakout harness therefore fans one port out to several **different**
+  peers, which is the whole reason it exists.
+
+The arrangement falls out of that, and the arrangement decides the bill of
+materials. In a mesh or a ring every switch is the same, so both ends of a
+link are lanes: they meet in a patch field, and the optics sit at the trunk
+ports. In a star the hub is the odd one out, so it breaks out and each spoke
+gives up a whole port - which is the one arrangement a DAC or AOC splitter can
+be used in, because its lanes end in modules and a module needs a port.
+
+That last point is why `--media=dac` with a broken-out mesh exits 3 rather
+than printing a plan. It is a real constraint, not a simplification, and the
+error names both ways round it. What the model does not cover is a switch with
+ports at two speeds, where a splitter could fan out into native ports in a
+mesh as well. Adding that means asking how many ports of each speed a switch
+has, which is a question the command line does not currently ask.
 
 ## Arithmetic traps
 
@@ -135,6 +207,16 @@ IPv6 sizes overflow the obvious types. Two cases have bitten and are covered:
 
 `num::Count` holds an exponent rather than a value for this reason.
 
+`fabrictool` holds its rates in megabits per second as a `u64` for a related
+reason: 2.5G is 2,500 and 1.6T is 1,600,000, so every rate anyone writes down
+divides into it exactly, and a float would put rounding error into counts that
+are meant to be exact. Anything finer than a megabit is refused rather than
+rounded.
+
+Switch counts are capped at 4,096 and parallel links at 64, which keeps the
+products - a mesh of 4,096 is 8,386,560 links - inside a `u64` with room to
+spare.
+
 ## Shell-facing details
 
 Operator sigils must survive an unquoted shell. `*` is a glob, which is why
@@ -144,7 +226,13 @@ bash and zsh. `~` is not, despite looking free: `~1` is directory-stack
 expansion in both shells.
 
 A new sigil has to be added to `looks_like_op` as well as to the grammar, or
-it will not survive being interleaved with flags.
+it will not survive being interleaved with flags. Both tools have one of
+those, and both partition argv in `arrange()` before clap sees it.
+
+fabrictool's `xK` is the one operator with no sigil at all, so `looks_like_op`
+tells it from an ordinary word by the digit after the `x`. `*K` means the same
+thing and is what a shell globs, which is why both exist - as `-64x2` does on
+the prefix side.
 
 `:` is doing double duty, as the separator in `%a:b:c` and as the start of a
 carve's name, and IPv6 addresses are mostly colons. Two rules keep it
@@ -158,6 +246,11 @@ argv before clap sees it, because clap would otherwise swallow `--json` into
 the operator list.
 
 ## Releasing
+
+Both binaries ship in one archive, still named after `prefixtool`, and the
+release workflow builds, signs, smoke-tests and packages every binary in
+`BINS`. A third one would go in that list, in `scripts/update-formula.sh`'s
+`bin.install`, and in `scripts/macos-unquarantine.sh`.
 
 `Cargo.toml` is the only place a version lives. The flake reads it with
 `fromTOML`; the Homebrew formula is generated from it.
@@ -181,4 +274,7 @@ confirm it matches:
 ```
 diff <(./target/debug/prefixtool 2001::/64 --color=never) \
      <(sed -n '/^\$ prefixtool 2001::\/64$/,/^```$/p' README.md | sed '1d;$d')
+
+diff <(./target/debug/fabrictool 8 @100G --color=never) \
+     <(sed -n '/^\$ fabrictool 8 @100G$/,/^```$/p' README.md | sed '1d;$d')
 ```
