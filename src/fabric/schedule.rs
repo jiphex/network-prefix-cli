@@ -247,31 +247,35 @@ impl Iterator for Schedule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fabric::ops;
     use crate::fabric::plan::{self, Problem};
 
-    fn plan_of(switches: u64, args: &[&str]) -> Plan {
-        let mut opts = plan::Options::default();
-        let mut ops = Vec::new();
-        for arg in args {
-            match arg.strip_prefix('/') {
-                Some(shape) => {
-                    opts.shape = Some(
-                        <Topology as clap::ValueEnum>::from_str(&shape.to_ascii_lowercase(), true)
-                            .expect("a shape"),
-                    )
-                }
-                None => ops.push(ops::parse(arg).expect("an operator")),
-            }
-        }
-        plan::build(switches, &ops, opts)
-            .map_err(|e: Problem| e.to_string())
-            .expect("plans")
-            .plan
+    fn plan_of(fabric: &str) -> Plan {
+        let r = crate::fabric::dsl::parse(fabric).expect("the fabric parses");
+        plan::build(
+            r.switches,
+            &r.ops,
+            plan::Options {
+                media: r.media,
+                shape: r.shape,
+                schedule: false,
+            },
+        )
+        .map_err(|e: Problem| e.to_string())
+        .expect("plans")
+        .plan
     }
 
-    fn lines(switches: u64, args: &[&str]) -> Vec<String> {
-        Schedule::new(&plan_of(switches, args))
+    /// A fabric of a given shape and size, for the sweeps below.
+    fn fabric(shape: &str, switches: u64, link: &str, panel: &str) -> String {
+        match shape {
+            "star" => format!("1 hub{panel} {link} {} spokes", switches - 1),
+            "leaf-spine" => format!("2 spines{panel} {link} {switches} leaves"),
+            _ => format!("{switches} switches{panel} {link} {shape}"),
+        }
+    }
+
+    fn lines(fabric: &str) -> Vec<String> {
+        Schedule::new(&plan_of(fabric))
             .map(|p| format!("{} {}", p.a, p.b))
             .collect()
     }
@@ -279,7 +283,7 @@ mod tests {
     #[test]
     fn a_mesh_lists_every_pair_once() {
         assert_eq!(
-            lines(4, &[]),
+            lines("4 switches -- mesh"),
             [
                 "sw1:1 sw2:1",
                 "sw1:2 sw3:1",
@@ -294,21 +298,21 @@ mod tests {
     #[test]
     fn a_ring_closes_and_a_star_fans_out() {
         assert_eq!(
-            lines(4, &["/ring"]),
+            lines("4 switches -- ring"),
             ["sw1:1 sw2:1", "sw2:2 sw3:1", "sw3:2 sw4:1", "sw4:2 sw1:2"]
         );
         assert_eq!(
-            lines(4, &["/star"]),
+            lines("1 hub -- 3 spokes"),
             ["sw1:1 sw2:1", "sw1:2 sw3:1", "sw1:3 sw4:1"]
         );
         // Two switches in a ring are one link, not the same link twice.
-        assert_eq!(lines(2, &["/ring"]), ["sw1:1 sw2:1"]);
+        assert_eq!(lines("2 switches -- ring"), ["sw1:1 sw2:1"]);
     }
 
     #[test]
     fn lanes_fill_a_port_before_the_next_one_is_used() {
         assert_eq!(
-            lines(6, &["@100G", "%400G"]),
+            lines("6 switches[400G] -100G- mesh"),
             [
                 "sw1:1/1 sw2:1/1",
                 "sw1:1/2 sw3:1/1",
@@ -332,7 +336,7 @@ mod tests {
     #[test]
     fn only_the_hub_of_a_star_is_broken_out() {
         assert_eq!(
-            lines(6, &["@100G", "%400G", "/star"]),
+            lines("1 hub[400G] -100G- 5 spokes"),
             [
                 "sw1:1/1 sw2:1",
                 "sw1:1/2 sw3:1",
@@ -346,7 +350,7 @@ mod tests {
     #[test]
     fn a_leaf_spine_wires_every_leaf_to_every_spine() {
         assert_eq!(
-            lines(3, &["+2"]),
+            lines("2 spines -- 3 leaves"),
             [
                 "spine1:1 leaf1:1",
                 "spine1:2 leaf2:1",
@@ -358,7 +362,7 @@ mod tests {
         );
         // Only the spines break out, and a spine port carries four leaves.
         assert_eq!(
-            lines(5, &["+1", "@100G", "%400G"]),
+            lines("1 spines[400G] -100G- 5 leaves"),
             [
                 "spine1:1/1 leaf1:1",
                 "spine1:1/2 leaf2:1",
@@ -372,7 +376,7 @@ mod tests {
     #[test]
     fn parallel_links_are_listed_one_after_another() {
         assert_eq!(
-            lines(3, &["x2"]),
+            lines("3 switches -2x- mesh"),
             [
                 "sw1:1 sw2:1",
                 "sw1:2 sw2:2",
@@ -390,23 +394,23 @@ mod tests {
     /// arithmetic disagree about what it joins.
     #[test]
     fn the_schedule_is_the_plan_it_came_from() {
-        for args in [
-            vec![],
-            vec!["/ring"],
-            vec!["/star"],
-            vec!["x2"],
-            vec!["/ring", "x3"],
-            vec!["@100G", "%4"],
-            vec!["@100G", "%4", "/star"],
-            vec!["@100G", "%8", "/ring"],
-            vec!["+1"],
-            vec!["+2"],
-            vec!["+3", "x2"],
-            vec!["@100G", "%4", "+2"],
-            vec!["@100G", "%400G", "+2", "-48@25G"],
+        for (shape, link, panel, tail) in [
+            ("mesh", "--", "", ""),
+            ("ring", "--", "", ""),
+            ("star", "--", "", ""),
+            ("mesh", "-2x-", "", ""),
+            ("ring", "-3x-", "", ""),
+            ("mesh", "-100G-", "[400G]", ""),
+            ("star", "-100G-", "[400G]", ""),
+            ("ring", "-100G-", "[800G]", ""),
+            ("leaf-spine", "--", "", ""),
+            ("leaf-spine", "-2x-", "", ""),
+            ("leaf-spine", "-100G-", "[400G]", ""),
+            ("leaf-spine", "-100G-", "[400G]", "-25G- 48 servers"),
         ] {
             for count in 2..14u64 {
-                let plan = plan_of(count, &args);
+                let args = format!("{} {tail}", fabric(shape, count, link, panel));
+                let plan = plan_of(&args);
                 let switches = plan.switches;
                 let spines = plan.spines;
                 let mut ports = vec![0u64; switches as usize];
@@ -444,14 +448,15 @@ mod tests {
     /// Nothing is plugged into a port twice: a lane carries one link end.
     #[test]
     fn every_lane_is_used_once() {
-        for args in [
-            vec![],
-            vec!["@100G", "%4"],
-            vec!["/ring", "x2"],
-            vec!["@100G", "%4", "+2"],
+        for (shape, link, panel) in [
+            ("mesh", "--", ""),
+            ("mesh", "-100G-", "[400G]"),
+            ("ring", "-2x-", ""),
+            ("leaf-spine", "-100G-", "[400G]"),
         ] {
             for switches in 2..12u64 {
-                let plan = plan_of(switches, &args);
+                let args = fabric(shape, switches, link, panel);
+                let plan = plan_of(&args);
                 let mut seen = std::collections::HashSet::new();
                 for patch in Schedule::new(&plan) {
                     for end in [patch.a, patch.b] {
@@ -466,7 +471,7 @@ mod tests {
     /// A big mesh must not be built before its first line can be printed.
     #[test]
     fn a_long_schedule_starts_immediately() {
-        let plan = plan_of(4096, &[]);
+        let plan = plan_of("4096 switches -- mesh");
         assert_eq!(plan.links, 8_386_560);
         let first: Vec<String> = Schedule::new(&plan)
             .take(2)

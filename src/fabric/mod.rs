@@ -18,7 +18,7 @@
 //! | `dot.rs` | A Graphviz drawing of the fabric |
 
 pub mod dot;
-pub mod ops;
+pub mod dsl;
 pub mod plan;
 pub mod render;
 pub mod schedule;

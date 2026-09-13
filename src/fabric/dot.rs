@@ -176,24 +176,32 @@ fn escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fabric::ops;
     use crate::fabric::plan::{self, Options};
 
-    fn dot(switches: u64, args: &[&str], opts: Options) -> String {
-        let ops: Vec<_> = args.iter().map(|a| ops::parse(a).unwrap()).collect();
-        let r = plan::build(switches, &ops, opts).expect("plans");
+    fn dot_of(fabric: &str, schedule: bool) -> String {
+        let r = crate::fabric::dsl::parse(fabric).expect("the fabric parses");
+        let r = plan::build(
+            r.switches,
+            &r.ops,
+            Options {
+                media: r.media,
+                shape: r.shape,
+                schedule,
+            },
+        )
+        .expect("plans");
         let mut out = Vec::new();
         write(&mut out, &r).unwrap();
         String::from_utf8(out).unwrap()
     }
 
-    fn plain(switches: u64, args: &[&str]) -> String {
-        dot(switches, args, Options::default())
+    fn plain(fabric: &str) -> String {
+        dot_of(fabric, false)
     }
 
     #[test]
     fn a_mesh_is_nodes_and_edges() {
-        let s = plain(3, &["@100G"]);
+        let s = plain("3 switches -100G- mesh");
         assert!(s.starts_with("// fabrictool: 3 switches - full mesh at 100G\n"));
         assert!(s.contains("graph fabric {"), "{s}");
         assert!(s.contains("sw1 [label=\"sw1\\n2 x 100G\"]"), "{s}");
@@ -208,7 +216,7 @@ mod tests {
 
     #[test]
     fn a_leaf_spine_draws_its_two_ranks() {
-        let s = dot(4, &["+2", "@100G", "%400G", "-48@25G"], Options::default());
+        let s = plain("2 spines[400G] -100G- 4 leaves -25G- 48 servers");
         assert!(s.contains("subgraph cluster_spine {"), "{s}");
         assert!(s.contains("label=\"2 spines\""), "{s}");
         assert!(s.contains("subgraph cluster_leaf {"), "{s}");
@@ -229,24 +237,17 @@ mod tests {
 
     #[test]
     fn parallel_links_are_one_labelled_edge() {
-        let s = plain(3, &["x3", "@400G"]);
+        let s = plain("3 switches -3x400G- mesh");
         assert_eq!(s.matches(" -- ").count(), 3);
         assert!(s.contains("[label=\"3 x 400G\"]"), "{s}");
         // And with no speed at all, the count still says something.
-        let s = plain(3, &["x2"]);
+        let s = plain("3 switches -2x- mesh");
         assert!(s.contains("[label=\"2 links\"]"), "{s}");
     }
 
     #[test]
     fn the_schedule_draws_a_cable_at_a_time() {
-        let s = dot(
-            4,
-            &["+2", "@100G", "%400G"],
-            Options {
-                schedule: true,
-                ..Options::default()
-            },
-        );
+        let s = dot_of("2 spines[400G] -100G- 4 leaves", true);
         assert!(
             s.contains("spine1 -- leaf1 [label=\"spine1:1/1 - leaf1:1\"];"),
             "{s}"
@@ -260,43 +261,24 @@ mod tests {
 
     #[test]
     fn a_star_marks_the_switch_everything_depends_on() {
-        let s = dot(
-            4,
-            &["@100G"],
-            Options {
-                shape: Some(Topology::Star),
-                ..Options::default()
-            },
-        );
+        let s = plain("1 hub -100G- 3 spokes");
         assert!(s.contains("shape=box3d"), "{s}");
         assert_eq!(s.matches(" -- ").count(), 3);
     }
 
     #[test]
     fn every_switch_appears_exactly_once() {
-        for (switches, args, opts) in [
-            (6u64, vec!["@100G"], Options::default()),
-            (6, vec!["@100G", "x2"], Options::default()),
-            (
-                6,
-                vec!["@100G"],
-                Options {
-                    shape: Some(Topology::Ring),
-                    ..Options::default()
-                },
-            ),
-            (6, vec!["+3", "@100G", "-24@10G"], Options::default()),
+        for (args, switches) in [
+            ("6 switches -100G- mesh", 6),
+            ("6 switches -2x100G- mesh", 6),
+            ("6 switches -100G- ring", 6),
+            ("3 spines -100G- 6 leaves -10G- 24 servers", 9),
         ] {
-            let s = dot(switches, &args, opts);
+            let s = plain(args);
             // Every `[label="` is a node or an edge; the graph's own label is
             // not one of them.
             let declared = s.matches("[label=\"").count() - s.matches(" -- ").count();
-            let plan_switches = if args.iter().any(|a| a.starts_with('+')) {
-                switches + 3
-            } else {
-                switches
-            };
-            assert_eq!(declared, plan_switches as usize, "{args:?}\n{s}");
+            assert_eq!(declared, switches, "{args}\n{s}");
         }
     }
 }

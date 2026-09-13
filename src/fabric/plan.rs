@@ -1,4 +1,4 @@
-//! Turning a switch count and a handful of operators into every number the
+//! Turning a fabric into every number the
 //! report shows: links, ports, cables, transceivers and bandwidth.
 //!
 //! The model is deliberately small, and stating it is half the value:
@@ -22,7 +22,7 @@
 //! are the other half of the only ratio anyone quotes: what is attached to a
 //! switch against what leaves it.
 
-use super::ops::{self, Breakout, Op};
+use super::dsl::{self, Breakout, Op};
 use super::speed::Speed;
 use super::{Media, Topology};
 
@@ -160,11 +160,11 @@ pub struct Item {
 /// The answer to `=N`, saying whether the plan fits a switch with that many
 /// ports.
 ///
-/// A bare `=N` is about the whole front panel. `=N@SPEED` is about the ports
-/// at one speed, which is how a real switch is specified - 48 at 25G, four at
-/// 100G, two at 200G - and the only way to ask whether a plan fits one.
-/// `:leaf` on either says which switches are being asked about, for the
-/// fabrics where a speed does not pick them out on its own.
+/// A panel entry with no speed is about the whole front panel. One with a
+/// speed is about the ports at that speed, which is how a real switch is
+/// specified - 48 at 25G, four at 100G, two at 200G - and the only way to ask
+/// whether a plan fits one. The tier the panel is written on is the switch
+/// being asked about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Budget {
     pub ports: u64,
@@ -269,14 +269,14 @@ pub struct Report {
     pub schedule: bool,
 }
 
-/// What the flags say, as against what the operators do: the shape of the
-/// fabric, what its links are made of, and whether a patch schedule was
-/// asked for. These are choices from a fixed list rather than numbers, which
-/// is what makes them flags.
+/// The parts of a request that are not counts: the shape of the fabric, what
+/// its links are made of, and whether a patch schedule was asked for. The
+/// first two come out of the notation and the third is a flag, because it is
+/// about what gets printed rather than about the fabric.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Options {
     pub media: Media,
-    pub shape: Option<Topology>,
+    pub shape: Topology,
     pub schedule: bool,
 }
 
@@ -314,19 +314,6 @@ pub fn build(switches: u64, ops: &[Op], opts: Options) -> Result<Report, Problem
         }
     }
 
-    // Saying how many spines there are is what makes it a leaf-spine: there
-    // is no other shape the answer fits into, and needing to say /leaf-spine
-    // as well would be a second way to say the same thing.
-    let topology = match (topology, spines) {
-        (Some(t), Some(_)) if t != Topology::LeafSpine => {
-            return Err(Problem::Input(format!(
-                "a {t} has no spines: drop the +, or ask for --shape=leaf-spine"
-            )));
-        }
-        (Some(t), _) => t,
-        (None, Some(_)) => Topology::LeafSpine,
-        (None, None) => Topology::default(),
-    };
     let spines = match topology {
         // A rack is built with a pair of spines, so that is what a
         // leaf-spine means when nobody says otherwise. One is a single point
@@ -498,7 +485,7 @@ fn plan(
     shape: Shape,
     speed: Option<Speed>,
     breakout: Option<Breakout>,
-    access: Option<ops::Access>,
+    access: Option<dsl::Access>,
     media: Media,
 ) -> Result<Plan, Problem> {
     let mut cautions = Vec::new();
@@ -529,8 +516,8 @@ fn plan(
         return Err(Problem::Impossible(format!(
             "a {}-lane {} splitter ends in modules, and in a {} every switch has the same \
              ports, so there is nothing at {} for those modules to plug into. Use \
-             --media=optic and join the lanes in a patch field, or put the splitter at one \
-             end only with --shape=star or --shape=leaf-spine",
+             :optic and join the lanes in a patch field, or put the splitter at one end \
+             only, with a hub over spokes or spines over leaves",
             lanes,
             media,
             topology,
@@ -585,7 +572,7 @@ fn plan(
     if access.is_some() && speed.is_none() {
         cautions.push(
             "no link speed was given, so there is nothing to measure the servers against: \
-             add @100G for a ratio"
+             put one on the link, as -100G-, for a ratio"
                 .into(),
         );
     }
@@ -631,8 +618,8 @@ fn lanes(breakout: Option<Breakout>, speed: Option<Speed>) -> Result<u64, Proble
         Some(Breakout::Port(port)) => {
             let Some(link) = speed else {
                 return Err(Problem::Input(format!(
-                    "%{port} says the ports are {port}, but not what a link is: add @100G, or \
-                     say how many lanes with %4"
+                    "{port} ports break out only once the link they carry has a speed: \
+                     write it on the link, as -100G-"
                 )));
             };
             if port < link {
@@ -658,7 +645,7 @@ fn sides(
     lanes: u64,
     speed: Option<Speed>,
     port_speed: Option<Speed>,
-    access: Option<ops::Access>,
+    access: Option<dsl::Access>,
 ) -> Result<Vec<Side>, Problem> {
     let splits = arrangement != Arrangement::Straight;
     let edge = shape.edge();
@@ -686,7 +673,7 @@ fn sides(
 /// Work out what the server-facing ports cost in physical ports, which is the
 /// same lane arithmetic the fabric side does - a 100G port is four 25G
 /// servers exactly as a 400G port is four 100G leaves.
-fn resolve_access(a: ops::Access) -> Result<Access, Problem> {
+fn resolve_access(a: dsl::Access) -> Result<Access, Problem> {
     let servers = u64::from(a.ports);
     let lanes = lanes(a.breakout, Some(a.speed))?;
     let port_speed = a.speed.times(lanes).ok_or_else(|| {
@@ -870,7 +857,7 @@ fn plural(n: u64, what: &str) -> String {
     format!("{n} {}", if n == 1 { what.to_string() } else { plural })
 }
 
-fn budget(plan: &Plan, asked: ops::Budget) -> Result<Budget, Problem> {
+fn budget(plan: &Plan, asked: dsl::Budget) -> Result<Budget, Problem> {
     let ports = u64::from(asked.ports);
     // A question about a kind of switch the fabric does not have is a
     // misunderstanding of the fabric rather than a plan that does not fit, so
@@ -947,63 +934,63 @@ mod tests {
     use super::*;
     use crate::fabric::speed;
 
-    fn ops(args: &[&str]) -> Vec<Op> {
-        args.iter()
-            .map(|a| super::super::ops::parse(a).unwrap())
-            .collect()
+    /// Every test states its fabric the way the command line does, so the
+    /// notation is exercised by everything that depends on it.
+    fn built(fabric: &str) -> Result<Report, Problem> {
+        let r = dsl::parse(fabric).expect("the fabric parses");
+        build(
+            r.switches,
+            &r.ops,
+            Options {
+                media: r.media,
+                shape: r.shape,
+                schedule: false,
+            },
+        )
     }
 
-    /// The tests write the shape inline, as `/star`, because a list of cases
-    /// reads better that way than one with a separate argument threaded
-    /// through it.
-    fn options<'a>(args: &[&'a str], media: Media) -> (Vec<&'a str>, Options) {
-        let mut opts = Options {
-            media,
-            ..Options::default()
-        };
-        let rest = args
-            .iter()
-            .filter(|a| match a.strip_prefix('/') {
-                Some(shape) => {
-                    opts.shape = Some(
-                        <Topology as clap::ValueEnum>::from_str(&shape.to_ascii_lowercase(), true)
-                            .expect("a shape"),
-                    );
-                    false
-                }
-                None => true,
-            })
-            .copied()
-            .collect();
-        (rest, opts)
+    fn plan_of(fabric: &str) -> Plan {
+        built(fabric).expect("plans").plan
     }
 
-    /// `build` as the tests want it, with the shape written inline.
-    fn built(switches: u64, args: &[&str], media: Media) -> Result<Report, Problem> {
-        let (rest, opts) = options(args, media);
-        build(switches, &ops(&rest), opts)
+    fn fails(fabric: &str) -> Problem {
+        built(fabric).expect_err("should not plan")
     }
 
-    fn plan_of(switches: u64, args: &[&str]) -> Plan {
-        let (rest, opts) = options(args, Media::Optic);
-        build(switches, &ops(&rest), opts).expect("plans").plan
+    /// A fabric of a given shape and size, for the sweeps that check a
+    /// property across every shape rather than one example of each.
+    fn fabric(shape: &str, switches: u64, link: &str, panel: &str) -> String {
+        match shape {
+            "star" => format!("1 hub{panel} {link} {} spokes", switches - 1),
+            "leaf-spine" => format!("2 spines{panel} {link} {switches} leaves"),
+            _ => format!("{switches} switches{panel} {link} {shape}"),
+        }
     }
 
-    fn fails(switches: u64, args: &[&str], media: Media) -> Problem {
-        let (rest, opts) = options(args, media);
-        build(switches, &ops(&rest), opts).expect_err("should not plan")
+    /// The message when the planner turns a fabric down at parse time.
+    fn fails_to_parse(fabric: &str) -> String {
+        dsl::parse(fabric).expect_err("should not parse")
+    }
+
+    /// A fabric the notation itself turns down, before the planner sees it.
+    fn refuses(fabric: &str) -> String {
+        dsl::parse(fabric).expect_err("should not parse")
     }
 
     #[test]
     fn a_mesh_is_a_link_for_every_pair() {
         for (n, want) in [(2, 1), (4, 6), (8, 28), (16, 120)] {
-            assert_eq!(plan_of(n, &[]).links, want, "{n} switches");
+            assert_eq!(
+                plan_of(&format!("{n} switches -- mesh")).links,
+                want,
+                "{n} switches"
+            );
         }
     }
 
     #[test]
     fn parallel_links_multiply_every_pair() {
-        let p = plan_of(8, &["x2"]);
+        let p = plan_of("8 switches -2x- mesh");
         assert_eq!(p.links, 56);
         assert_eq!(p.sides[0].degree, 14);
         assert_eq!(p.sides[0].ports, 14);
@@ -1011,15 +998,15 @@ mod tests {
 
     #[test]
     fn a_ring_is_a_link_per_switch_and_a_pair_is_the_exception() {
-        assert_eq!(plan_of(8, &["/ring"]).links, 8);
-        assert_eq!(plan_of(3, &["/ring"]).links, 3);
-        assert_eq!(plan_of(2, &["/ring"]).links, 1);
-        assert_eq!(plan_of(8, &["/ring"]).sides[0].degree, 2);
+        assert_eq!(plan_of("8 switches -- ring").links, 8);
+        assert_eq!(plan_of("3 switches -- ring").links, 3);
+        assert_eq!(plan_of("2 switches -- ring").links, 1);
+        assert_eq!(plan_of("8 switches -- ring").sides[0].degree, 2);
     }
 
     #[test]
     fn a_star_has_two_kinds_of_switch() {
-        let p = plan_of(8, &["/star"]);
+        let p = plan_of("1 hub -- 7 spokes");
         assert_eq!(p.links, 7);
         assert_eq!(p.sides.len(), 2);
         assert_eq!((p.sides[0].role, p.sides[0].degree), (Role::Hub, 7));
@@ -1032,10 +1019,10 @@ mod tests {
     /// degree disagree, which is the easiest thing here to get wrong.
     #[test]
     fn link_ends_and_degrees_always_agree() {
-        for topology in ["/mesh", "/ring", "/star"] {
+        for topology in ["mesh", "ring", "star"] {
             for switches in 2..24u64 {
-                for per_pair in ["x1", "x2", "x3"] {
-                    let p = plan_of(switches, &[topology, per_pair]);
+                for per_pair in ["-1x-", "-2x-", "-3x-"] {
+                    let p = plan_of(&fabric(topology, switches, per_pair, ""));
                     let ends: u64 = p.sides.iter().map(|s| s.switches * s.degree).sum();
                     assert_eq!(
                         ends,
@@ -1056,16 +1043,17 @@ mod tests {
     #[test]
     fn lanes_are_either_used_or_spare() {
         for switches in 2..20u64 {
-            for args in [
-                vec!["@100G", "%4"],
-                vec!["@100G", "%8"],
-                vec!["@100G", "%400G"],
-                vec!["@100G", "%4", "x2"],
-                vec!["@100G", "%4", "/star"],
-                vec!["@100G", "%4", "/ring"],
-                vec!["@100G"],
+            for (shape, link, panel) in [
+                ("mesh", "-100G-", "[400G]"),
+                ("mesh", "-100G-", "[800G]"),
+                ("mesh", "-100G-", "[400G]"),
+                ("mesh", "-2x100G-", "[400G]"),
+                ("star", "-100G-", "[400G]"),
+                ("ring", "-100G-", "[400G]"),
+                ("mesh", "-100G-", ""),
             ] {
-                let p = plan_of(switches, &args);
+                let args = fabric(shape, switches, link, panel);
+                let p = plan_of(&args);
                 for side in &p.sides {
                     assert_eq!(
                         side.ports * side.lanes,
@@ -1082,7 +1070,7 @@ mod tests {
 
     #[test]
     fn a_breakout_is_the_port_speed_over_the_link_speed() {
-        let p = plan_of(8, &["@100G", "%400G"]);
+        let p = plan_of("8 switches[400G] -100G- mesh");
         assert_eq!(p.lanes, 4);
         assert_eq!(p.port_speed, Some(speed::parse("400G").unwrap()));
         assert_eq!(p.arrangement, Arrangement::SplitBothEnds);
@@ -1093,27 +1081,25 @@ mod tests {
         assert_eq!(p.spare_lanes, 8);
     }
 
+    /// Lanes are worked out from a port speed and a link speed, so a fabric
+    /// that gives neither has nothing to break out and simply counts cables.
     #[test]
-    fn lanes_can_be_given_without_any_speeds_at_all() {
-        let p = plan_of(8, &["%4"]);
-        assert_eq!(p.lanes, 4);
+    fn a_port_with_no_link_speed_breaks_nothing_out() {
+        let p = plan_of("8 switches[400G] -- mesh");
+        assert_eq!(p.lanes, 1);
         assert_eq!(p.port_speed, None);
-        assert_eq!(p.trunk_ports, 16);
+        assert_eq!(p.arrangement, Arrangement::Straight);
     }
 
     #[test]
-    fn a_port_speed_needs_a_link_speed_to_divide_into() {
-        let e = fails(8, &["%400G"], Media::Optic);
-        assert!(matches!(e, Problem::Input(_)), "{e:?}");
-        assert!(e.to_string().contains("@100G"));
-        assert!(matches!(
-            fails(8, &["@40G", "%100G"], Media::Optic),
-            Problem::Input(_)
-        ));
-        assert!(matches!(
-            fails(8, &["@400G", "%100G"], Media::Optic),
-            Problem::Input(_)
-        ));
+    fn a_port_slower_than_its_link_carries_nothing() {
+        // A 100G port cannot carry a 400G link, and the panel says what the
+        // switch does have so the next try is an informed one.
+        let e = fails_to_parse("8 switches[100G] -400G- mesh");
+        assert!(e.contains("no port on"), "{e}");
+        assert!(e.contains("100G"), "{e}");
+        // A port faster than its link is the ordinary case: it breaks out.
+        assert_eq!(plan_of("8 switches[400G] -100G- mesh").lanes, 4);
     }
 
     #[test]
@@ -1121,7 +1107,7 @@ mod tests {
         // %1 is a contradiction and is refused, but %100G under a 100G link
         // is a fair statement about the switch that happens to work out at
         // one lane. It plans as an unsplit port rather than as an error.
-        let p = plan_of(8, &["@100G", "%100G"]);
+        let p = plan_of("8 switches[100G] -100G- mesh");
         assert_eq!(p.lanes, 1);
         assert_eq!(p.arrangement, Arrangement::Straight);
         assert_eq!(p.spare_lanes, 0);
@@ -1136,11 +1122,11 @@ mod tests {
     fn a_splitter_needs_somewhere_for_its_modules_to_go() {
         // Both ends of a mesh link are lanes, so a DAC splitter has nothing
         // to plug into. That is a buildability problem, not a typo.
-        let e = fails(8, &["@100G", "%400G"], Media::Dac);
+        let e = fails("8 switches[400G] -100G:dac- mesh");
         assert!(matches!(e, Problem::Impossible(_)), "{e:?}");
-        assert!(e.to_string().contains("--shape=star"));
+        assert!(e.to_string().contains("a hub over spokes"));
         // The same splitter into a star's spokes is exactly what it is for.
-        let p = built(8, &["@100G", "%400G", "/star"], Media::Dac)
+        let p = built("1 hub[400G] -100G:dac- 7 spokes")
             .expect("plans")
             .plan;
         assert_eq!(p.arrangement, Arrangement::SplitUpstream);
@@ -1149,8 +1135,8 @@ mod tests {
 
     #[test]
     fn straight_cables_do_not_care_about_media() {
-        for media in [Media::Optic, Media::Aoc, Media::Dac] {
-            let p = built(8, &["@100G"], media).expect("plans").plan;
+        for media in ["optic", "aoc", "dac"] {
+            let p = plan_of(&format!("8 switches -100G:{media}- mesh"));
             assert_eq!(p.arrangement, Arrangement::Straight);
             assert_eq!(p.lanes, 1);
             assert_eq!(p.spare_lanes, 0);
@@ -1159,7 +1145,7 @@ mod tests {
 
     #[test]
     fn the_bill_counts_one_end_per_link_end() {
-        let p = plan_of(8, &["@100G"]);
+        let p = plan_of("8 switches -100G- mesh");
         let optics = p.materials.iter().find(|i| i.key == "transceiver-100G");
         assert_eq!(optics.map(|i| i.quantity), Some(56));
         let leads = p.materials.iter().find(|i| i.key == "patch-lead");
@@ -1168,8 +1154,8 @@ mod tests {
 
     #[test]
     fn breaking_out_buys_fewer_optics_than_it_saves_links() {
-        let straight = plan_of(8, &["@100G"]);
-        let broken = plan_of(8, &["@100G", "%400G"]);
+        let straight = plan_of("8 switches -100G- mesh");
+        let broken = plan_of("8 switches[400G] -100G- mesh");
         let count = |p: &Plan, key: &str| {
             p.materials
                 .iter()
@@ -1184,7 +1170,7 @@ mod tests {
 
     #[test]
     fn a_star_with_a_splitter_puts_an_optic_at_each_spoke() {
-        let p = plan_of(9, &["@25G", "%100G", "/star"]);
+        let p = plan_of("1 hub[100G] -25G- 8 spokes");
         let count = |key: &str| {
             p.materials
                 .iter()
@@ -1200,17 +1186,17 @@ mod tests {
 
     #[test]
     fn resilience_and_hops_describe_the_shape() {
-        let mesh = plan_of(8, &[]);
+        let mesh = plan_of("8 switches -- mesh");
         assert_eq!((mesh.hops, mesh.resilience), (1, 7));
-        let ring = plan_of(8, &["/ring"]);
+        let ring = plan_of("8 switches -- ring");
         assert_eq!((ring.hops, ring.resilience), (4, 2));
-        let star = plan_of(8, &["/star"]);
+        let star = plan_of("1 hub -- 7 spokes");
         assert_eq!((star.hops, star.resilience), (2, 1));
     }
 
     #[test]
     fn a_leaf_spine_is_every_leaf_to_every_spine() {
-        let p = plan_of(16, &["+2"]);
+        let p = plan_of("2 spines -- 16 leaves");
         assert_eq!(p.topology, Topology::LeafSpine);
         assert_eq!(p.switches, 18);
         assert_eq!(p.spines, 2);
@@ -1224,20 +1210,22 @@ mod tests {
 
     #[test]
     fn saying_how_many_spines_is_what_makes_it_a_leaf_spine() {
-        assert_eq!(plan_of(8, &["+2"]).topology, Topology::LeafSpine);
+        assert_eq!(
+            plan_of("2 spines -- 8 leaves").topology,
+            Topology::LeafSpine
+        );
         // A rack is built with a pair, so that is what the shape means when
         // nobody says otherwise.
-        assert_eq!(plan_of(8, &["/leaf-spine"]).spines, 2);
-        assert_eq!(plan_of(8, &["/leaf-spine", "+4"]).spines, 4);
-        // A shape that has no spines cannot be given any.
-        let e = fails(8, &["/mesh", "+2"], Media::Optic);
-        assert!(matches!(e, Problem::Input(_)), "{e:?}");
-        assert!(e.to_string().contains("no spines"), "{e}");
+        assert_eq!(plan_of("2 spines -- 8 leaves").spines, 2);
+        assert_eq!(plan_of("4 spines -- 8 leaves").spines, 4);
+        // A shape that has no spines cannot be given any, because the
+        // notation has nowhere to write them: a mesh is one tier.
+        assert!(refuses("2 spines -- 8 switches").contains("one tier of a mesh"));
     }
 
     #[test]
     fn a_pair_of_spines_is_what_a_leaf_survives_losing_one_of() {
-        let p = plan_of(16, &["+2", "@100G", "-48@25G"]);
+        let p = plan_of("2 spines -100G- 16 leaves -25G- 48 servers");
         let loss = p.spine_loss().expect("a spine to lose");
         assert_eq!((loss.uplinks, loss.left), (2, 1));
         // Losing one halves the fabric a leaf has, so the ratio doubles.
@@ -1250,12 +1238,12 @@ mod tests {
 
         // Two links to each of two spines is four uplinks, and a spine
         // taking two of them with it.
-        let p = plan_of(16, &["+2", "x2", "@100G"]);
+        let p = plan_of("2 spines -2x100G- 16 leaves");
         let loss = p.spine_loss().unwrap();
         assert_eq!((loss.uplinks, loss.left), (4, 2));
 
         // One spine is not a loss anyone plans around; it is the fabric.
-        let p = plan_of(16, &["+1", "@100G"]);
+        let p = plan_of("1 spines -100G- 16 leaves");
         assert_eq!(p.spine_loss(), None);
         assert!(
             p.cautions
@@ -1265,7 +1253,7 @@ mod tests {
             p.cautions
         );
         // And a shape with no spines has none to lose.
-        assert_eq!(plan_of(16, &["@100G"]).spine_loss(), None);
+        assert_eq!(plan_of("16 switches -100G- mesh").spine_loss(), None);
     }
 
     /// The case a rack is actually built as: two leaves, a pair of spines,
@@ -1273,7 +1261,7 @@ mod tests {
     #[test]
     fn a_pair_of_leaves_reaches_every_spine() {
         for (leaves, spines) in [(2u64, 2u64), (2, 4), (4, 2), (8, 2)] {
-            let p = plan_of(leaves, &[&format!("+{spines}"), "@100G"]);
+            let p = plan_of(&format!("{spines} spines -100G- {leaves} leaves"));
             assert_eq!(p.links, leaves * spines, "{leaves} leaves, {spines} spines");
             let leaf = p.leaves().expect("leaves");
             assert_eq!(leaf.degree, spines, "a leaf reaches every spine");
@@ -1284,7 +1272,7 @@ mod tests {
 
     #[test]
     fn only_the_spines_break_out() {
-        let p = plan_of(16, &["+2", "@100G", "%400G"]);
+        let p = plan_of("2 spines[400G] -100G- 16 leaves");
         assert_eq!(p.arrangement, Arrangement::SplitUpstream);
         // Sixteen leaves over four lanes to a port is four spine ports.
         assert_eq!((p.sides[0].ports, p.sides[0].lanes), (4, 4));
@@ -1293,7 +1281,7 @@ mod tests {
         assert_eq!(p.sides[1].port_speed, Some(speed::parse("100G").unwrap()));
         assert_eq!(p.trunk_ports, 8);
         // A splitter is fine here: its lanes plug into whole leaf ports.
-        assert!(built(16, &["+2", "@100G", "%400G"], Media::Dac).is_ok());
+        assert!(built("2 spines[400G] -100G:dac- 16 leaves").is_ok());
     }
 
     /// A star of two has a hub and a spoke that hold the same number of
@@ -1302,7 +1290,7 @@ mod tests {
     /// any question about the hub.
     #[test]
     fn a_star_of_two_still_has_a_hub_and_a_spoke() {
-        let p = plan_of(2, &["/star", "@100G", "-24@10G"]);
+        let p = plan_of("1 hub -100G- 1 spokes -10G- 24 servers");
         assert_eq!(p.sides.len(), 2);
         assert_eq!((p.sides[0].role, p.sides[0].switches), (Role::Hub, 1));
         assert_eq!((p.sides[1].role, p.sides[1].switches), (Role::Spoke, 1));
@@ -1312,24 +1300,25 @@ mod tests {
         assert_eq!(spoke.access.expect("servers").servers, 24);
         assert_eq!(spoke.ratio(p.speed).expect("a ratio").down, 240_000);
         // And a question about the hub is answerable.
-        assert!(built(2, &["/star", "@100G", "=32:hub"], Media::Optic).is_ok());
+        assert!(built("1 hub[32] -100G:optic- 1 spokes").is_ok());
     }
 
     #[test]
     fn a_single_leaf_under_spines_is_a_fabric() {
-        let p = plan_of(1, &["+2", "@100G"]);
+        let p = plan_of("2 spines -100G- 1 leaves");
         assert_eq!((p.switches, p.spines, p.links), (3, 2, 2));
         assert_eq!(p.leaves().expect("a leaf").switches, 1);
         // One switch on its own is still not a fabric, and neither is none.
-        for (count, args) in [(1u64, vec!["@100G"]), (0, vec!["+2"])] {
-            let e = fails(count, &args, Media::Optic);
-            assert!(matches!(e, Problem::Input(_)), "{count} {args:?}: {e:?}");
-        }
+        // One switch on its own is still not a fabric, and the notation
+        // turns down a tier of none before the planner ever sees it.
+        let e = fails("1 switches -100G- mesh");
+        assert!(matches!(e, Problem::Input(_)), "{e:?}");
+        assert!(refuses("0 leaves -100G- mesh").contains("not 0"));
     }
 
     #[test]
     fn a_hub_is_flagged_the_way_a_lone_spine_is() {
-        let p = plan_of(8, &["/star", "@100G"]);
+        let p = plan_of("1 hub -100G- 7 spokes");
         assert!(
             p.cautions
                 .iter()
@@ -1339,51 +1328,63 @@ mod tests {
         );
         // A star of two is a pair, where the hub carries no risk a pair does
         // not carry anyway.
-        assert!(plan_of(2, &["/star", "@100G"]).cautions.is_empty());
-        assert!(plan_of(8, &["@100G"]).cautions.is_empty());
+        assert!(plan_of("1 hub -100G- 1 spokes").cautions.is_empty());
+        assert!(plan_of("8 switches -100G- mesh").cautions.is_empty());
     }
 
     #[test]
     fn servers_hang_off_whichever_switch_is_the_edge() {
-        let edge = |args: &[&str]| {
-            plan_of(8, args)
+        let edge = |fabric: &str| {
+            plan_of(fabric)
                 .sides
                 .iter()
                 .find(|s| s.access.is_some())
                 .map(|s| s.role)
         };
-        assert_eq!(edge(&["-48@25G", "+2"]), Some(Role::Leaf));
-        assert_eq!(edge(&["-48@25G", "/star"]), Some(Role::Spoke));
-        assert_eq!(edge(&["-48@25G"]), Some(Role::Every));
-        assert_eq!(edge(&["-48@25G", "/ring"]), Some(Role::Every));
+        assert_eq!(
+            edge("2 spines -100G- 8 leaves -25G- 48 servers"),
+            Some(Role::Leaf)
+        );
+        assert_eq!(
+            edge("1 hub -100G- 7 spokes -25G- 48 servers"),
+            Some(Role::Spoke)
+        );
+        assert_eq!(
+            edge("8 switches -100G- mesh -25G- 48 servers"),
+            Some(Role::Every)
+        );
+        assert_eq!(
+            edge("8 switches -100G- ring -25G- 48 servers"),
+            Some(Role::Every)
+        );
         // A spine has nothing hanging off it; that is what makes it a spine.
-        let p = plan_of(8, &["-48@25G", "+2"]);
+        let p = plan_of("2 spines -- 8 leaves -25G- 48 servers");
         assert!(p.sides[0].access.is_none());
     }
 
     #[test]
     fn a_ratio_is_what_is_attached_against_what_leaves() {
         // 48 x 25G of servers is 1.2T; two 100G uplinks is 200G; 6:1.
-        let p = plan_of(16, &["+2", "@100G", "-48@25G"]);
+        let p = plan_of("2 spines -100G- 16 leaves -25G- 48 servers");
         let leaf = &p.sides[1];
         let r = leaf.ratio(p.speed).expect("a ratio");
         assert_eq!((r.down, r.up), (1_200_000, 200_000));
         assert!(r.blocking());
 
         // Four spines is four uplinks, and the same servers come out 3:1.
-        let p = plan_of(16, &["+4", "@100G", "-48@25G"]);
+        let p = plan_of("4 spines -100G- 16 leaves -25G- 48 servers");
         let r = p.sides[1].ratio(p.speed).expect("a ratio");
         assert_eq!((r.down, r.up), (1_200_000, 400_000));
 
         // Enough uplink and it stops being a ratio anyone worries about.
-        let p = plan_of(16, &["+12", "@100G", "-48@25G"]);
+        let p = plan_of("12 spines -100G- 16 leaves -25G- 48 servers");
         assert!(!p.sides[1].ratio(p.speed).unwrap().blocking());
 
         // With no link speed there is nothing to measure the servers against.
-        let p = plan_of(16, &["+2", "-48@25G"]);
+        let p = plan_of("2 spines -- 16 leaves -25G- 48 servers");
         assert_eq!(p.sides[1].ratio(p.speed), None);
         assert!(
-            p.cautions.iter().any(|c| c.contains("@100G")),
+            p.cautions.iter().any(|c| c.contains("-100G-")),
             "{:?}",
             p.cautions
         );
@@ -1392,7 +1393,7 @@ mod tests {
     #[test]
     fn server_ports_are_broken_out_like_any_others() {
         // 48 servers at 25G out of 100G ports is twelve ports, not 48.
-        let p = plan_of(16, &["+2", "@100G", "-48@25G%100G"]);
+        let p = plan_of("2 spines -100G- 16 leaves[100G] -25G- 48 servers");
         let a = p.sides[1].access.expect("servers");
         assert_eq!((a.servers, a.ports, a.lanes), (48, 12, 4));
         assert_eq!(a.port_speed, speed::parse("100G").unwrap());
@@ -1402,7 +1403,7 @@ mod tests {
         assert_eq!(r.down, 1_200_000);
 
         // A count that does not divide leaves a part-used port.
-        let a = plan_of(16, &["+2", "@100G", "-50@25G%4"]).sides[1]
+        let a = plan_of("2 spines -100G- 16 leaves[100G] -25G- 50 servers").sides[1]
             .access
             .expect("servers");
         assert_eq!((a.ports, a.spare_lanes), (13, 2));
@@ -1412,14 +1413,15 @@ mod tests {
     /// is counted against a port budget has to be both of them.
     #[test]
     fn every_port_a_switch_gives_up_is_counted_once() {
-        for args in [
-            vec!["+2", "@100G", "%400G", "-48@25G"],
-            vec!["+4", "@100G", "-48@25G%100G"],
-            vec!["/star", "@25G", "-24@10G"],
-            vec!["@100G", "-12@25G"],
+        for (shape, link, panel, tail) in [
+            ("leaf-spine", "-100G-", "[400G]", "-25G- 48 servers"),
+            ("leaf-spine", "-100G-", "[100G]", "-25G- 48 servers"),
+            ("star", "-25G-", "", "-10G- 24 servers"),
+            ("mesh", "-100G-", "", "-25G- 12 servers"),
         ] {
             for switches in 2..12u64 {
-                let p = plan_of(switches, &args);
+                let args = format!("{} {}", fabric(shape, switches, link, panel), tail);
+                let p = plan_of(&args);
                 for side in &p.sides {
                     let access = side.access.map_or(0, |a| a.ports);
                     assert_eq!(
@@ -1431,7 +1433,7 @@ mod tests {
                 }
                 let budget = super::budget(
                     &p,
-                    ops::Budget {
+                    dsl::Budget {
                         ports: 1_000,
                         speed: None,
                         role: None,
@@ -1451,14 +1453,8 @@ mod tests {
     /// plan fits one.
     #[test]
     fn a_budget_can_ask_about_one_kind_of_port() {
-        let r = built(
-            8,
-            &[
-                "+4", "@100G", "%400G", "-48@25G", "=32@400G", "=4@100G", "=48@25G", "=2@200G",
-            ],
-            Media::Optic,
-        )
-        .expect("plans");
+        let r = built("4 spines[32x400G] -100G- 8 leaves[4x100G,48x25G,2x200G] -25G- 48 servers")
+            .expect("plans");
         let [spine_400, leaf_100, leaf_25, none_200] = &r.budgets[..] else {
             panic!("four budgets, got {}", r.budgets.len());
         };
@@ -1487,12 +1483,16 @@ mod tests {
     /// which is being asked about.
     #[test]
     fn a_budget_can_name_the_switches_it_is_about() {
-        // Leaves and spines both at 100G: the speed alone cannot separate
-        // them, and without a role the question is about both.
-        let both = built(8, &["+2", "@100G", "=4@100G"], Media::Optic).expect("plans");
-        assert_eq!(both.budgets[0].sides.len(), 2);
+        // Leaves and spines both at 100G. A panel is written on the tier
+        // that owns it, so each is its own question and neither reaches the
+        // other, however alike their ports are.
+        let both = built("2 spines[4x100G] -100G- 8 leaves[4x100G]").expect("plans");
+        assert_eq!(both.budgets.len(), 2);
+        assert_eq!(both.budgets[0].sides.len(), 1);
+        assert_eq!(both.budgets[0].sides[0].role, Role::Spine);
+        assert_eq!(both.budgets[1].sides[0].role, Role::Leaf);
 
-        let leaves = built(8, &["+2", "@100G", "=4@100G:leaf"], Media::Optic).expect("plans");
+        let leaves = built("2 spines -100G- 8 leaves[4x100G]").expect("plans");
         assert_eq!(leaves.budgets[0].sides.len(), 1);
         assert_eq!(leaves.budgets[0].sides[0].role, Role::Leaf);
         assert_eq!(leaves.budgets[0].sides[0].needed, 2);
@@ -1500,7 +1500,7 @@ mod tests {
 
         // The spines of that same fabric need a port per leaf, and eight
         // does not fit in four.
-        let spines = built(8, &["+2", "@100G", "=4@100G:spine"], Media::Optic).expect("plans");
+        let spines = built("2 spines[4x100G] -100G:optic- 8 leaves").expect("plans");
         assert_eq!(spines.budgets[0].sides[0].role, Role::Spine);
         assert_eq!(
             (
@@ -1513,37 +1513,34 @@ mod tests {
 
         // A role with no ports at that speed is answered, not counted as a
         // fit by default.
-        let none = built(8, &["+2", "@100G", "=4@400G:leaf"], Media::Optic).expect("plans");
+        let none = built("2 spines -100G:optic- 8 leaves[4x400G]").expect("plans");
         assert!(none.budgets[0].sides.is_empty());
     }
 
     #[test]
     fn a_kind_of_switch_the_fabric_has_not_got_is_refused() {
-        for (args, missing) in [
-            (vec!["@100G", "=32:leaf"], "leaves"),
-            (vec!["@100G", "=32:spine"], "spines"),
-            (vec!["/star", "@100G", "=32:spine"], "spines"),
-            (vec!["+2", "@100G", "=32:hub"], "hubs"),
+        // Naming a tier the shape has not got is refused by the notation,
+        // because a panel is written on the tier that owns it.
+        for (fabric, says) in [
+            ("8 leaves -100G- mesh", "one tier of switches"),
+            ("2 spines[32] -100G- 8 switches", "one tier of a mesh"),
+            ("2 hub -100G- 8 spokes", "a star has one hub"),
+            ("8 leaves -100G- 2 spines", "spines over leaves"),
         ] {
-            let e = fails(8, &args, Media::Optic);
-            assert!(matches!(e, Problem::Input(_)), "{args:?}: {e:?}");
-            assert!(e.to_string().contains(missing), "{args:?}: {e}");
-            // And says what it does have, so the next try is an informed one.
-            assert!(e.to_string().contains("it has"), "{args:?}: {e}");
+            let e = refuses(fabric);
+            assert!(e.contains(says), "{fabric}: {e}");
         }
-        // The shapes where every switch is alike answer to `switch`.
-        assert!(built(8, &["@100G", "=32:switch"], Media::Optic).is_ok());
+        // The shapes where every switch is alike answer to `switches`.
+        assert!(built("8 switches[32] -100G- mesh").is_ok());
     }
 
     #[test]
     fn a_port_speed_the_plan_cannot_reach_is_reported_short() {
         // Four spines at 200G needs four 200G ports on a leaf that has two.
-        let r = built(
-            8,
-            &["+4", "@200G", "%400G", "-48@25G", "=2@200G"],
-            Media::Optic,
-        )
-        .expect("plans");
+        // The leaf's own 25G ports carry its servers, so the 200G question
+        // is about its uplinks alone.
+        let r =
+            built("4 spines[400G] -200G- 8 leaves[2x200G,48x25G] -25G- 48 servers").expect("plans");
         let b = &r.budgets[0];
         assert!(!b.fits());
         assert_eq!(b.sides[0].role, Role::Leaf);
@@ -1552,71 +1549,60 @@ mod tests {
 
     #[test]
     fn a_budget_is_checked_against_every_kind_of_switch() {
-        let r = built(8, &["@100G", "%400G", "=32"], Media::Optic).unwrap();
+        let r = built("8 switches[400G,32] -100G:optic- mesh").unwrap();
         assert!(r.budgets[0].fits());
         assert_eq!(r.budgets[0].sides[0].spare, 30);
 
-        // A star's hub runs out long before its spokes do.
-        let r = built(48, &["@100G", "/star", "=32"], Media::Optic).unwrap();
+        // A star's hub runs out long before its spokes do, and each panel
+        // answers for the switch it was written on.
+        let r = built("1 hub[32] -100G- 47 spokes[32]").unwrap();
         assert!(!r.budgets[0].fits());
         assert_eq!(r.budgets[0].sides[0].short, 15);
-        assert_eq!(r.budgets[0].sides[1].short, 0);
+        assert!(r.budgets[1].fits());
     }
 
     #[test]
     fn a_fabric_needs_at_least_two_switches() {
-        for n in [0, 1] {
-            assert!(matches!(
-                built(n, &[], Media::Optic),
-                Err(Problem::Input(_))
-            ));
-        }
-        assert!(built(2, &[], Media::Optic).is_ok());
+        assert!(refuses("0 switches -- mesh").contains("not 0"));
+        assert!(matches!(fails("1 switches -- mesh"), Problem::Input(_)));
+        assert!(built("2 switches -- mesh").is_ok());
     }
 
     #[test]
     fn absurd_sizes_are_refused_rather_than_attempted() {
         assert!(matches!(
-            built(MAX_SWITCHES + 1, &[], Media::Optic),
-            Err(Problem::Input(_))
+            fails(&format!("{} switches -- mesh", MAX_SWITCHES + 1)),
+            Problem::Input(_)
         ));
-        assert!(matches!(
-            built(8, &["x65"], Media::Optic),
-            Err(Problem::Input(_))
-        ));
+        assert!(matches!(fails("8 switches -65x- mesh"), Problem::Input(_)));
         // The largest fabric this will plan still fits the arithmetic.
-        let p = plan_of(MAX_SWITCHES, &[]);
+        let p = plan_of(&format!("{MAX_SWITCHES} switches -- mesh"));
         assert_eq!(p.links, MAX_SWITCHES * (MAX_SWITCHES - 1) / 2);
     }
 
     #[test]
-    fn a_scalar_given_twice_is_an_error_rather_than_a_race() {
-        // The shape is not in this list: it is a flag, and a flag given twice
-        // is clap's business rather than ours.
-        for args in [
-            vec!["@100G", "@400G"],
-            vec!["%4", "%8"],
-            vec!["x2", "x4"],
-            vec!["+2", "+4"],
-            vec!["-24@10G", "-48@25G"],
+    fn nothing_about_a_fabric_can_be_said_twice() {
+        // A fabric has one link between two tiers and one panel per tier, so
+        // the notation has nowhere to put a second answer to one question.
+        for fabric in [
+            "8 switches -100G- -400G- mesh",
+            "8 switches[400G][800G] -100G- mesh",
+            "2 spines -100G- 8 leaves -25G- 48 servers -10G- 24 servers",
         ] {
-            assert!(
-                matches!(built(8, &args, Media::Optic), Err(Problem::Input(_))),
-                "{args:?}"
-            );
+            assert!(!refuses(fabric).is_empty(), "{fabric}");
         }
-        // Questions are not scalars: two budgets are two questions.
-        let r = built(8, &["=32", "=16"], Media::Optic).unwrap();
+        // Questions are not one answer: two panel entries are two questions.
+        let r = built("8 switches[32,16] -- mesh").unwrap();
         assert_eq!(r.budgets.len(), 2);
     }
 
     #[test]
     fn odd_speeds_and_lane_counts_are_flagged_not_refused() {
-        let p = plan_of(8, &["@300G"]);
+        let p = plan_of("8 switches -300G- mesh");
         assert!(p.cautions.iter().any(|c| c.contains("standard")));
-        let p = plan_of(8, &["@100G", "%3"]);
+        let p = plan_of("8 switches[300G] -100G- mesh");
         assert_eq!(p.lanes, 3);
         assert!(p.cautions.iter().any(|c| c.contains("3-lane")));
-        assert!(plan_of(8, &["@100G"]).cautions.is_empty());
+        assert!(plan_of("8 switches -100G- mesh").cautions.is_empty());
     }
 }

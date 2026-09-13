@@ -3,97 +3,75 @@
 
 use clap::Parser;
 use prefixtool::fabric::plan::{Options, Problem};
-use prefixtool::fabric::{Media, Topology, dot, ops, plan, render};
+use prefixtool::fabric::{dot, dsl, plan, render};
 use prefixtool::style;
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
 
 const AFTER_HELP: &str = "\
-OPERATORS:
-  @SPEED        the speed of each link: @100G, @25G, @1.6T
-  %M            break each switch port into M lanes
-  %SPEED        the same, worked out from the port speed instead of counted
-  xK, *K        K parallel links between each pair (use the x form in zsh)
-  +S            S spines above the leaves, which makes it a leaf-spine
-  -N@SPEED      N server ports on each leaf, at that speed
-  -N@SPEED%P    the same, out of P ports split into lanes to reach them
-  =N            each switch has N ports - does the plan fit?
-  =N@SPEED      the same, about the N ports it has at one speed
-  =N@SPEED:WHO  the same, about one kind of switch: leaf, spine, hub, spoke
+THE FABRIC:
+  A fabric is a chain of tiers running from the core to the edge, and the
+  thing between two tiers is the link that joins them. Three pieces of
+  syntax carry all of it:
 
-  An operator carries a number, a speed or both. A choice from a fixed list -
-  the shape of the fabric, what its links are made of - is a flag instead, so
-  there is one rule for which is which rather than a sigil for each: --shape
-  and --media.
+    N name        a tier: 8 leaves, 4 spines, 24 switches, 48 servers
+    [...]         that switch's front panel: [32x400G], [48x25G,4x100G]
+    -SPEED-       the links between the tiers either side of it: -100G-
 
-  A bare number after % is a lane count and a number with a unit is a port
-  speed, so %4 and %400G are different questions and neither has to be
-  guessed at. Both need a link speed before the bill of materials can name
-  the parts, but neither needs one to count them.
+  The tiers are spines, leaves, switches, hub, spokes and servers. Two
+  tiers of switches make a leaf-spine, spines first; a hub over spokes
+  makes a star. One tier says the pattern its own switches are wired in,
+  as mesh or ring on the far side of its link. Servers, where there are
+  any, are the tier the chain ends with.
 
-  Where every switch is the same shape - a mesh or a ring - both ends of a
-  link are lanes of a broken-out port, so they meet in a patch field and the
-  optics sit at the trunk ports. Where they are not - a star's hub, a
-  leaf-spine's spines - the upstream end breaks out and each switch below it
-  takes a whole port, which is what a DAC or AOC splitter cable is built for
-  and what a 400G spine port fanned out to four 100G leaves is.
+  A link carries KxSPEED for parallel links between each pair, and :optic,
+  :aoc or :dac for what it is made of. Write it as -- when no speed has
+  been picked and only the cable count is wanted.
 
-  A real switch is specified by what it has at each speed - 48 at 25G, four
-  at 100G, two at 200G - so =N@SPEED asks about one kind of port at a time,
-  and a bare =N asks about the whole front panel. A speed is usually enough
-  to say which switches are meant, since only one kind of switch has ports at
-  it; where two do - leaves and spines both at 100G - :leaf or :spine says
-  which, and the answer says so when the speed was not enough on its own.
-  Several questions may be given; under --quiet any one of them not fitting
-  is the exit status.
+  A front panel entry is a count, a speed, or both: [32] is thirty-two
+  ports of unstated speed, [400G] is ports at 400G however many it takes,
+  and [32x400G] is both. Every entry with a count is a question the report
+  answers, about the switch whose panel it is written on.
 
-  Server ports are the other half of an oversubscription ratio: what is
-  attached to a switch against what leaves it. They sit on whichever
-  switches are the fabric's edge - the leaves of a leaf-spine, the spokes of
-  a star, every switch of a mesh or a ring - and they count against a port
-  budget alongside the fabric's own ports, because they come out of the same
-  front panel.
+  Lanes are never written down. The port that carries a link is the
+  smallest one at or above the link's speed, and where the port is the
+  faster of the two it breaks out. A fabric with no speeds at all breaks
+  nothing out and counts cables.
 
 EXAMPLES:
-  fabrictool 8
+  fabrictool '8 switches -- mesh'
         how many cables does a mesh of eight switches take
 
-  fabrictool 8 @100G
+  fabrictool '8 switches -100G- mesh'
         the same, with what it adds up to in bandwidth
 
-  fabrictool 8 @100G %400G
+  fabrictool '8 switches[400G] -100G- mesh'
         out of 400G ports, four 100G lanes each: how many optics is that
 
-  fabrictool 16 @400G %800G =32
+  fabrictool '16 switches[32x800G] -400G- mesh'
         a mesh of sixteen out of 800G ports - does it fit a 32-port switch
 
-  fabrictool 4 @400G x2
+  fabrictool '4 switches -2x400G- mesh'
         two links between each pair, so any one of them can fail
 
-  fabrictool 24 --shape=ring @100G
-        a ring instead, and what that costs in bandwidth across the middle
+  fabrictool '24 switches -100G- ring'
+        a ring instead, and what that costs in bandwidth
 
-  fabrictool 48 --shape=star @25G %100G --media=dac
+  fabrictool '1 hub[100G] -25G:dac- 47 spokes'
         one hub, 25G to each spoke, split four ways out of its 100G ports
 
-  fabrictool 16 +2 @100G %400G -48@25G
-        sixteen leaves under two spines, 400G spine ports fanned out to 100G
-        uplinks, 48 servers at 25G under each leaf - and what that is
+  fabrictool '2 spines[400G] -100G- 16 leaves -25G- 48 servers'
+        sixteen leaves under two spines, 400G spine ports fanned out to
+        100G uplinks, 48 servers at 25G under each leaf - and what that is
         oversubscribed by
 
-  fabrictool 8 +4 @100G %400G -48@25G =32@400G =4@100G =48@25G
-        eight leaves on four spines, checked against the front panel each
-        switch really has: 32 ports at 400G on the spines, and 48 at 25G
-        with four at 100G on the leaves
+  fabrictool '4 spines[32x400G] -100G- 8 leaves[48x25G,2x200G,4x100G] -25G- 48 servers'
+        the same checked against the front panel each switch really has
 
-  fabrictool 8 +2 @100G =4@100G:leaf =32@100G:spine
-        the same question where both kinds of switch have 100G ports, so
-        each one has to say which switches it is about
-
-  fabrictool 8 @100G %400G --schedule
+  fabrictool '8 switches[400G] -100G- mesh' --schedule
         the schedule to take to the rack, every link of it
 
-  fabrictool 16 +2 @100G %400G --dot | dot -Tpng > fabric.png
+  fabrictool '2 spines[400G] -100G- 16 leaves' --dot | dot -Tpng > fabric.png
         the same fabric as a picture, for checking the shape rather than
         counting it
 
@@ -104,13 +82,13 @@ COLOUR:
 
 EXIT STATUS:
   0  success
-  1  bad switch count or operator
+  1  a fabric that does not read, or a count out of range
   3  the fabric cannot be built as asked
-  4  --quiet, and an =N port budget does not fit
+  4  --quiet, and a front panel does not fit
 
-  Under --quiet an =N is a question, so its answer is the exit status:
+  Under --quiet a panel is a question, so its answer is the exit status:
 
-      fabrictool 48 @100G =32 -q > /dev/null || echo needs bigger switches
+      fabrictool '48 switches[32] -100G- mesh' -q > /dev/null || echo needs bigger switches
 
   Not fitting is 4 rather than 1 so that it stays distinct from bad input: a
   mistyped port count is a different thing from a confident no.
@@ -131,15 +109,11 @@ EXIT STATUS:
     max_term_width = 96
 )]
 struct Cli {
-    /// How many switches to connect - leaves, when +S puts spines above them
-    // Taken as text and converted in run() rather than by clap, so that a
-    // mistyped count leaves by the same exit code as a mistyped operator.
-    #[arg(value_name = "SWITCHES")]
-    switches: String,
-
-    /// Operators: @SPEED, %M, xK, +S, -N@SPEED, =N  (see below)
-    #[arg(value_name = "OP", allow_hyphen_values = true)]
-    ops: Vec<String>,
+    /// The fabric: '4 spines[32x400G] -100G- 8 leaves -25G- 48 servers'
+    // Taken as text and parsed in run(), so that a fabric that does not read
+    // leaves by the same exit code as one that cannot be built.
+    #[arg(value_name = "FABRIC", allow_hyphen_values = true)]
+    fabric: String,
 
     /// Show only the first N links of the patch schedule
     #[arg(short = 'n', long, value_name = "N")]
@@ -152,15 +126,6 @@ struct Cli {
     /// Emit a JSON object instead of a report
     #[arg(long)]
     json: bool,
-
-    /// The shape of the fabric: mesh (default), ring, star or leaf-spine
-    #[arg(long, value_name = "SHAPE", value_enum)]
-    shape: Option<Topology>,
-
-    /// What the links are made of: optic, aoc or dac
-    #[arg(long, value_name = "KIND", default_value_t = Media::Optic,
-          value_enum, hide_default_value = true)]
-    media: Media,
 
     /// Print the patch schedule: which port on which switch reaches which
     #[arg(long)]
@@ -176,36 +141,8 @@ struct Cli {
     color: style::When,
 }
 
-/// Move operators behind a `--` so that flags and operators can be given in
-/// any order: `fabrictool 8 @100G --json` reads naturally, but clap would
-/// otherwise hand `--json` to the operator list.
-fn arrange<I: IntoIterator<Item = String>>(args: I) -> Vec<String> {
-    let mut head = Vec::new();
-    let mut ops = Vec::new();
-    let mut after_dashdash = false;
-    for (i, arg) in args.into_iter().enumerate() {
-        if i == 0 || after_dashdash {
-            // argv[0], then anything the user themselves put after `--`.
-            if i == 0 {
-                head.push(arg)
-            } else {
-                ops.push(arg)
-            }
-        } else if arg == "--" {
-            after_dashdash = true;
-        } else if ops::looks_like_op(&arg) {
-            ops.push(arg);
-        } else {
-            head.push(arg);
-        }
-    }
-    head.push("--".into());
-    head.extend(ops);
-    head
-}
-
 fn main() -> ExitCode {
-    let cli = Cli::parse_from(arrange(std::env::args()));
+    let cli = Cli::parse();
     match run(&cli) {
         Ok(code) => code,
         Err(e) => {
@@ -223,22 +160,13 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<ExitCode, Problem> {
-    let switches: u64 = cli
-        .switches
-        .parse()
-        .map_err(|_| Problem::Input(format!("'{}' is not a number of switches", cli.switches)))?;
-    let parsed = cli
-        .ops
-        .iter()
-        .map(|o| ops::parse(o))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(Problem::Input)?;
+    let fabric = dsl::parse(&cli.fabric).map_err(Problem::Input)?;
     let report = plan::build(
-        switches,
-        &parsed,
+        fabric.switches,
+        &fabric.ops,
         Options {
-            media: cli.media,
-            shape: cli.shape,
+            media: fabric.media,
+            shape: fabric.shape,
             schedule: cli.schedule,
         },
     )?;
@@ -289,54 +217,38 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Cli {
-        Cli::parse_from(arrange(args.iter().map(|s| s.to_string())))
+        Cli::parse_from(args)
     }
 
+    /// The fabric is one argument, so the flags sit either side of it and
+    /// clap needs no help telling them apart.
     #[test]
-    fn flags_may_follow_operators() {
-        let cli = parse(&["fabrictool", "8", "@100G", "%400G", "--json", "-n", "2"]);
-        assert_eq!(cli.switches, "8");
-        assert_eq!(cli.ops, vec!["@100G", "%400G"]);
+    fn the_fabric_is_one_argument_among_the_flags() {
+        let cli = parse(&[
+            "fabrictool",
+            "8 switches[400G] -100G- mesh",
+            "--json",
+            "-n",
+            "2",
+        ]);
+        assert_eq!(cli.fabric, "8 switches[400G] -100G- mesh");
         assert!(cli.json);
         assert_eq!(cli.limit, Some(2));
-    }
 
-    #[test]
-    fn flags_may_precede_operators() {
-        let cli = parse(&["fabrictool", "--json", "16", "--shape=ring", "x2"]);
-        assert_eq!(cli.switches, "16");
-        assert_eq!(cli.ops, vec!["x2"]);
-        assert_eq!(cli.shape, Some(Topology::Ring));
+        let cli = parse(&["fabrictool", "--json", "24 switches -100G- ring"]);
+        assert_eq!(cli.fabric, "24 switches -100G- ring");
         assert!(cli.json);
     }
 
+    /// A fabric starts with a digit, so it is never mistaken for a flag's
+    /// value however the two are ordered.
     #[test]
-    fn the_switch_count_is_not_mistaken_for_a_flag_value() {
-        let cli = parse(&["fabrictool", "-n", "4", "8", "--schedule"]);
-        assert_eq!((cli.switches.as_str(), cli.limit), ("8", Some(4)));
+    fn the_fabric_is_not_mistaken_for_a_flag_value() {
+        let cli = parse(&["fabrictool", "-n", "4", "8 switches -- mesh", "--schedule"]);
+        assert_eq!(
+            (cli.fabric.as_str(), cli.limit),
+            ("8 switches -- mesh", Some(4))
+        );
         assert!(cli.schedule);
-        assert!(cli.ops.is_empty());
-    }
-
-    /// A sigil that is really a flag reaches the operator parser, which
-    /// names the flag, rather than clap, which would only say the argument
-    /// was unexpected.
-    #[test]
-    fn a_sigil_that_is_really_a_flag_reaches_a_useful_error() {
-        let cli = parse(&["fabrictool", "8", "/ring", "."]);
-        assert_eq!(cli.ops, vec!["/ring", "."]);
-    }
-
-    #[test]
-    fn an_explicit_dashdash_forces_operators() {
-        let cli = parse(&["fabrictool", "8", "--", "x2"]);
-        assert_eq!(cli.ops, vec!["x2"]);
-    }
-
-    #[test]
-    fn a_bare_count_needs_no_operators() {
-        let cli = parse(&["fabrictool", "4"]);
-        assert_eq!(cli.switches, "4");
-        assert!(cli.ops.is_empty());
     }
 }

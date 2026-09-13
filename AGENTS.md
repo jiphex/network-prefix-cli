@@ -65,7 +65,7 @@ down:
 | Module | Holds |
 | --- | --- |
 | `fabric/speed.rs` | Port and link rates, held in megabits per second |
-| `fabric/ops.rs` | The operator grammar, hand-written |
+| `fabric/dsl.rs` | The fabric notation, hand-written |
 | `fabric/plan.rs` | Topology, ports, cables, transceivers and bandwidth |
 | `fabric/schedule.rs` | Which port on which switch reaches which |
 | `fabric/render.rs` | Text, `--quiet` and `--json` output |
@@ -73,8 +73,8 @@ down:
 
 `num.rs`, `style.rs` and `json.rs` are the three modules both tools use. The
 fabric grammar is hand-written rather than parsed with nom because it has no
-ambiguity to resolve: every operator is a sigil and a payload whose shape the
-sigil chooses. Reach for nom there only if that stops being true.
+ambiguity to resolve: the notation is a chain of tiers and links read left to
+right. Reach for nom there only if that stops being true.
 
 ## Conventions the tests enforce
 
@@ -190,7 +190,7 @@ arrangement a DAC or AOC splitter can be used in, because its lanes end in
 modules and a module needs a port. `Topology::is_uniform` is what that turns
 on, so a new shape decides its arrangement by answering that one question.
 
-That is why `--media=dac` with a broken-out mesh exits 3 rather than printing
+That is why `:dac` with a broken-out mesh exits 3 rather than printing
 a plan. It is a real constraint, not a simplification, and the error names both
 ways round it.
 
@@ -264,50 +264,45 @@ bash and zsh. `~` is not, despite looking free: `~1` is directory-stack
 expansion in both shells.
 
 A new sigil has to be added to `looks_like_op` as well as to the grammar, or
-it will not survive being interleaved with flags. Both tools have one of
-those, and both partition argv in `arrange()` before clap sees it.
+it will not survive being interleaved with flags. That applies to the prefix
+side, which is the one with sigil operators.
 
-fabrictool's `xK` is the one operator with no sigil at all, so `looks_like_op`
-tells it from an ordinary word by the digit after the `x`. `*K` means the same
-thing and is what a shell globs, which is why both exist - as `-64x2` does on
-the prefix side. `-48@25G` is told from `-n` and `--json` the same way the
-prefix side does it: a digit has to follow the `-`.
+**One argument says what the fabric is; the flags say what to print about
+it.** That line is absolute on the fabric side, and it is what replaced a
+positional count, five sigil operators and two flags that between them
+described the same thing three different ways. `--schedule`, `--dot`,
+`--json`, `-q`, `-n` and `--color` are about output and stay flags; nothing
+else is a flag.
 
-**An operator carries a number; a flag carries a choice.** `@100G`, `%4`,
-`x2`, `+2`, `-48@25G` and `=32@400G` all carry a figure that could be any of a
-million; the shape of the fabric and what its links are made of are each one
-of four, so they are `--shape` and `--media`. That line is what keeps the
-grammar explicable, and a new one belongs on whichever side of it the thing
-being said falls.
+The notation is a chain of tiers, `N name[panel]`, joined by links, `-SPEED-`.
+It draws the hardware rather than describing it, which is why the spines come
+first: the chain runs from the core to the edge and carries on into the
+servers. Two tiers of switches are a leaf-spine and a `hub` over `spokes` is a
+star; one tier names the pattern its own switches are wired in, as `mesh` or
+`ring` on the far side of its link.
 
-`looks_like_op` still claims a leading `/` and a bare `.`, which are what a
-hand reaches for when the thing wanted is one of those flags: they reach
-`ops::parse`, which names the flag, where clap would only say the argument was
-unexpected.
+**A panel belongs to the tier it is written on.** That is what makes a port
+budget a question about one kind of switch rather than about whatever matches
+a speed, and it is why the `:ROLE` suffix and the note that went with it are
+both gone: leaves and spines both at 100G used to make one question answer
+about both, and now each tier's panel is its own question. The heading names
+the tier, so a stack of them reads.
 
-`+S` carries the shape as well as a number. Saying how many spines there are
-is what makes a fabric a leaf-spine, because there is no other shape the
-answer fits into, and `/leaf-spine +2` says the same thing twice. Giving a
-spine count to a shape that has none is an error rather than something to
-quietly ignore.
+**Lanes are never written down.** The port that carries a link is the smallest
+one at or above the link's speed, and the port being the faster of the two is
+what breaking out means. One rule covers both ends: a spine's 400G port
+carrying a 100G uplink, and a leaf's 100G port carrying 25G servers. A fabric
+with no speeds at all has nothing to break out and counts cables. A panel with
+no port big enough for its link is refused, and the message lists what the
+switch does have.
 
-`=N` is about the whole front panel, `=N@SPEED` about the ports at one speed,
-and `=N@SPEED:leaf` about one kind of switch's ports at one speed. The second
-exists because a real switch is specified that way - 48 at 25G, four at 100G,
-two at 200G - and a single total cannot answer whether a plan fits one: four
-200G uplinks fit a 54-port leaf and do not fit its two 200G ports. A speed
-nothing runs at is answered as such rather than silently fitting.
-
-The third exists because a speed picks out a kind of switch in most fabrics
-but not all: leaves and spines both at 100G is an ordinary build, and without
-a role the answer covers both. Covering both is the right answer to the
-question as asked and still a surprising one, so the budget block says which
-roles the speed reached and names the `:ROLE` that narrows it. A role the
-fabric has not got is refused rather than answered yes, since it means the
-question was asked of the wrong fabric.
+A leaf-spine with one tier of spines is all this plans. Three tiers of
+switches is a super-spine layer, and the notation can write one, so it says
+what it is and suggests the two runs that answer it rather than failing
+obscurely.
 
 `Role` lives in `fabric/mod.rs` alongside `Topology` and `Media` rather than
-in `plan.rs`, because the grammar has to name one, and a parser reaching into
+in `plan.rs`, because the notation has to name one, and a parser reaching into
 the planner for its vocabulary is the wrong way round.
 
 A leaf-spine with no count is **a pair of spines**, not one, because that is
@@ -324,9 +319,10 @@ the *first* one starts a name there; and `-<prefix>` tries the whole payload
 as an address before splitting anything off, so `-2001:db8::1` stays an
 address rather than becoming `2001:db8:` named `1`.
 
-Flags and operators may be interleaved. `arrange()` in `main.rs` partitions
-argv before clap sees it, because clap would otherwise swallow `--json` into
-the operator list.
+Flags and operators may be interleaved on the prefix side. `arrange()` in
+`main.rs` partitions argv before clap sees it, because clap would otherwise
+swallow `--json` into the operator list. fabrictool needs none of that: its
+fabric is a single quoted argument, so clap tells it from the flags itself.
 
 ## Releasing
 
@@ -382,6 +378,6 @@ confirm it matches:
 diff <(./target/debug/prefixtool 2001::/64 --color=never) \
      <(sed -n '/^\$ prefixtool 2001::\/64$/,/^```$/p' README.md | sed '1d;$d')
 
-diff <(./target/debug/fabrictool 8 @100G --color=never) \
-     <(sed -n '/^\$ fabrictool 8 @100G$/,/^```$/p' README.md | sed '1d;$d')
+diff <(./target/debug/fabrictool '8 switches -100G- mesh' --color=never) \
+     <(sed -n "/^\$ fabrictool '8 switches -100G- mesh'$/,/^\`\`\`$/p" README.md | sed '1d;$d')
 ```

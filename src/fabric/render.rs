@@ -369,7 +369,7 @@ fn oversubscription(w: &mut impl Write, p: &Plan, o: &Opts) -> io::Result<()> {
                 &format!(
                     "{} attached, fabric unknown  {}",
                     a.speed.total(a.servers),
-                    o.style.dim("(add @100G for a ratio)")
+                    o.style.dim("(put a speed on the link for a ratio)")
                 ),
             )?,
         }
@@ -972,30 +972,21 @@ fn heading(w: &mut impl Write, o: &Opts, text: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fabric::{Media, ops, plan};
+    use crate::fabric::plan;
     use crate::style::When;
 
-    /// The shape still reads inline in these cases, as `/star`, so the lists
-    /// below stay one line each; it is a flag on the command line now.
-    fn report(switches: u64, args: &[&str], media: Media) -> Report {
-        let mut opts = plan::Options {
-            media,
-            ..plan::Options::default()
-        };
-        let mut ops = Vec::new();
-        for arg in args {
-            match arg.strip_prefix("--shape=") {
-                Some(shape) => {
-                    opts.shape = Some(
-                        <Topology as clap::ValueEnum>::from_str(&shape.to_ascii_lowercase(), true)
-                            .expect("a shape"),
-                    )
-                }
-                None if *arg == "--schedule" => opts.schedule = true,
-                None => ops.push(ops::parse(arg).expect("an operator")),
-            }
-        }
-        plan::build(switches, &ops, opts).expect("plans")
+    fn report(fabric: &str, schedule: bool) -> Report {
+        let r = crate::fabric::dsl::parse(fabric).expect("the fabric parses");
+        plan::build(
+            r.switches,
+            &r.ops,
+            plan::Options {
+                media: r.media,
+                shape: r.shape,
+                schedule,
+            },
+        )
+        .expect("plans")
     }
 
     /// The default the binary uses: the whole schedule, however long it is.
@@ -1003,15 +994,22 @@ mod tests {
         Opts { limit: None, style }
     }
 
-    fn rendered(switches: u64, args: &[&str]) -> String {
-        let r = report(switches, args, Media::Optic);
+    fn rendered(fabric: &str) -> String {
+        let r = report(fabric, false);
         let mut out = Vec::new();
         text(&mut out, &r, &opts(Style::plain())).unwrap();
         String::from_utf8(out).unwrap()
     }
 
-    fn quieted(switches: u64, args: &[&str]) -> String {
-        let r = report(switches, args, Media::Optic);
+    fn quieted_with_schedule(fabric: &str) -> String {
+        let r = report(fabric, true);
+        let mut out = Vec::new();
+        quiet(&mut out, &r, &opts(Style::plain())).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    fn quieted(fabric: &str) -> String {
+        let r = report(fabric, false);
         let mut out = Vec::new();
         quiet(&mut out, &r, &opts(Style::plain())).unwrap();
         String::from_utf8(out).unwrap()
@@ -1040,48 +1038,43 @@ mod tests {
     /// fine in a plain-text test.
     #[test]
     fn colour_never_changes_the_layout() {
-        for (switches, args) in [
-            (8u64, vec!["@100G", "%400G", "=32", "--schedule"]),
+        for (args, schedule) in [
+            ("8 switches[400G,32] -100G- mesh", true),
+            ("1 hub[100G,16] -25G- 8 spokes[16]", true),
+            ("4 switches[4] -2x400G- ring", true),
+            ("2 switches -- mesh", false),
+            ("16 switches[300G,8] -100G- mesh", false),
             (
-                9,
-                vec!["@25G", "%100G", "--shape=star", "=16", "--schedule"],
+                "2 spines[400G,56] -100G- 16 leaves[56] -25G- 48 servers",
+                true,
             ),
-            (4, vec!["--shape=ring", "x2", "@400G", "=4", "--schedule"]),
-            (2, vec![]),
-            (16, vec!["@300G", "%3", "=8"]),
+            ("2 spines -100G- 2 leaves -25G- 48 servers", false),
+            ("1 spines -100G- 16 leaves -25G- 48 servers", false),
             (
-                16,
-                vec!["+2", "@100G", "%400G", "-48@25G", "=56", "--schedule"],
+                "4 spines[32x400G] -100G- 8 leaves[4x100G,2x200G] -25G- 48 servers",
+                false,
             ),
-            (2, vec!["+2", "@100G", "-48@25G"]),
-            (16, vec!["+1", "@100G", "-48@25G"]),
             (
-                8,
-                vec![
-                    "+4", "@100G", "%400G", "-48@25G", "=32@400G", "=4@100G", "=2@200G",
-                ],
+                "12 spines[64] -100G- 16 leaves[64,100G] -25G- 48 servers",
+                false,
             ),
-            (16, vec!["+12", "@100G", "-48@25G%100G", "=64"]),
-            (8, vec!["-24@10G"]),
+            ("8 switches -100G- mesh -10G- 24 servers", false),
         ] {
-            let r = report(switches, &args, Media::Optic);
+            let r = report(args, schedule);
             let mut plain = Vec::new();
             text(&mut plain, &r, &opts(Style::plain())).unwrap();
             let mut painted = Vec::new();
             text(&mut painted, &r, &opts(Style::new(When::Always))).unwrap();
             let plain = String::from_utf8(plain).unwrap();
             let painted = String::from_utf8(painted).unwrap();
-            assert!(
-                painted.contains('\x1b'),
-                "{switches} {args:?} was not painted"
-            );
-            assert_eq!(strip_ansi(&painted), plain, "{switches} {args:?}");
+            assert!(painted.contains('\x1b'), "{args} was not painted");
+            assert_eq!(strip_ansi(&painted), plain, "{args}");
         }
     }
 
     #[test]
     fn the_report_opens_with_what_was_asked_about() {
-        let s = rendered(8, &["@100G", "%400G"]);
+        let s = rendered("8 switches[400G] -100G- mesh");
         assert!(s.starts_with("8 switches  -  full mesh at 100G\n"), "{s}");
         assert!(s.contains("Links          28"), "{s}");
         assert!(s.contains("2 x 400G on each switch"), "{s}");
@@ -1095,25 +1088,25 @@ mod tests {
     #[test]
     fn the_report_does_not_say_the_same_thing_twice() {
         // One link to a pair, so the per-pair row would repeat the link speed.
-        let s = rendered(8, &["@100G"]);
+        let s = rendered("8 switches -100G- mesh");
         assert!(s.contains("Link speed     100G"), "{s}");
         assert!(!s.contains("Per pair"), "{s}");
         // Two links to a pair is a sum worth showing.
-        let s = rendered(8, &["@100G", "x2"]);
+        let s = rendered("8 switches -2x100G- mesh");
         assert!(s.contains("Per pair       200G  (2 x 100G)"), "{s}");
 
         // Without a speed the per-switch row is the port count again.
-        let s = rendered(8, &[]);
+        let s = rendered("8 switches -- mesh");
         assert!(!s.contains("Per switch"), "{s}");
         assert!(s.contains("Ports          7 ports on each switch"), "{s}");
         // With one it carries the capacity, which the ports row does not.
-        let s = rendered(8, &["@100G"]);
+        let s = rendered("8 switches -100G- mesh");
         assert!(s.contains("Per switch     7 links, 700G"), "{s}");
     }
 
     #[test]
     fn one_of_a_kind_of_switch_is_the_one_not_each() {
-        let s = rendered(2, &["--shape=star", "@100G", "-24@10G", "=32:hub"]);
+        let s = rendered("1 hub[32] -100G- 1 spokes -10G- 24 servers");
         assert!(s.contains("the hub 1 link, 100G"), "{s}");
         assert!(s.contains("the spoke 1 link, 100G"), "{s}");
         assert!(s.contains("1 x 100G on the spoke"), "{s}");
@@ -1131,7 +1124,7 @@ mod tests {
 
     #[test]
     fn a_fabric_with_no_speeds_leaves_the_rates_out() {
-        let s = rendered(8, &[]);
+        let s = rendered("8 switches -- mesh");
         assert!(s.starts_with("8 switches  -  full mesh\n"), "{s}");
         assert!(!s.contains("Link speed"), "{s}");
         assert!(!s.contains("Fabric total"), "{s}");
@@ -1145,7 +1138,7 @@ mod tests {
 
     #[test]
     fn a_star_reports_its_two_kinds_of_switch_separately() {
-        let s = rendered(9, &["@25G", "%100G", "--shape=star"]);
+        let s = rendered("1 hub[100G] -25G- 8 spokes");
         assert!(s.contains("the hub 8 links, 200G"), "{s}");
         assert!(s.contains("each spoke 1 link, 25G"), "{s}");
         assert!(s.contains("2 x 100G on the hub"), "{s}");
@@ -1154,14 +1147,15 @@ mod tests {
 
     #[test]
     fn the_verdict_on_a_port_budget_comes_first() {
-        let s = rendered(8, &["@100G", "%400G", "=32"]);
+        let s = rendered("8 switches[400G,32] -100G- mesh");
         assert!(
             s.contains("Ports on a 32-port switch\n  yes - it fits"),
             "{s}"
         );
-        let s = rendered(48, &["@100G", "--shape=star", "=32"]);
+        // The heading names the tier the panel was written on.
+        let s = rendered("1 hub[32] -100G- 47 spokes[32]");
         assert!(
-            s.contains("Ports on a 32-port switch\n  no - the hub is 15 short"),
+            s.contains("Ports on a 32-port hub\n  no - the hub is 15 short"),
             "{s}"
         );
         assert!(s.contains("47 of 32 ports at 100G, 15 short"), "{s}");
@@ -1171,7 +1165,7 @@ mod tests {
     /// `-n` is for, and only then does it say it was trimmed.
     #[test]
     fn a_schedule_comes_out_whole_unless_it_was_trimmed() {
-        let r = report(8, &["--schedule"], Media::Optic);
+        let r = report("8 switches -:optic- mesh", true);
         let mut out = Vec::new();
         text(&mut out, &r, &opts(Style::plain())).unwrap();
         let s = String::from_utf8(out).unwrap();
@@ -1194,14 +1188,14 @@ mod tests {
 
     #[test]
     fn quiet_prints_the_bill_and_nothing_else() {
-        let s = quieted(8, &["@100G", "%400G"]);
+        let s = quieted("8 switches[400G] -100G- mesh");
         assert_eq!(
             s,
             "16\ttransceiver-400G\n16\tbreakout-1x4-400G\n28\tcoupler-100G\n16\tport-switch-400G\n"
         );
         // The keys are the interface, so a leaf-spine's are spelled out too:
         // 32 links, two ends each, and 16 ports on each of two spines.
-        let s = quieted(16, &["+2", "@100G", "-48@25G"]);
+        let s = quieted("2 spines -100G- 16 leaves -25G- 48 servers");
         assert_eq!(
             s,
             "64\ttransceiver-100G\n32\tpatch-lead\n32\tport-spine-100G\n\
@@ -1211,7 +1205,7 @@ mod tests {
 
     #[test]
     fn quiet_prints_the_schedule_when_the_schedule_was_asked_for() {
-        let s = quieted(4, &["--schedule"]);
+        let s = quieted_with_schedule("4 switches -- mesh");
         assert_eq!(
             s,
             "sw1:1 sw2:1\nsw1:2 sw3:1\nsw1:3 sw4:1\nsw2:2 sw3:2\nsw2:3 sw4:2\nsw3:3 sw4:3\n"
@@ -1223,7 +1217,7 @@ mod tests {
 
     #[test]
     fn a_leaf_spine_says_which_switches_are_which() {
-        let s = rendered(16, &["+2", "@100G", "%400G", "-48@25G"]);
+        let s = rendered("2 spines[400G] -100G- 16 leaves -25G- 48 servers");
         assert!(
             s.starts_with("16 leaves + 2 spines  -  leaf-spine at 100G\n"),
             "{s}"
@@ -1246,41 +1240,41 @@ mod tests {
         );
     }
 
+    /// A speed shared by two kinds of switch used to make one question
+    /// answer about both. A panel is written on the tier that owns it, so
+    /// each tier's ports are now their own question and cannot reach across.
     #[test]
-    fn a_budget_covering_two_kinds_of_switch_says_so() {
-        // A 100G link from a leaf to a spine makes both of them 100G
-        // switches, so =4@100G answers about both and reads as a refusal of
-        // the leaf. The note is what stops that being read as the whole
-        // story.
-        let s = rendered(8, &["+4", "@100G", "-48@25G", "=4@100G"]);
-        assert!(s.contains("no - each spine is 4 short"), "{s}");
-        assert!(s.contains(":spine or :leaf asks about one of them"), "{s}");
-        // Narrowed to one kind of switch, the same question is a yes and
-        // there is nothing left to warn about.
-        let leaf = rendered(8, &["+4", "@100G", "-48@25G", "=4@100G:leaf"]);
-        assert!(leaf.contains("yes - it fits"), "{leaf}");
-        assert!(!leaf.contains("more than one kind of switch"), "{leaf}");
-        // Nor is there when only one kind of switch has a port at the speed.
-        let split = rendered(8, &["+4", "@100G", "%400G", "-48@25G", "=4@100G"]);
-        assert!(!split.contains("more than one kind of switch"), "{split}");
+    fn each_tier_answers_only_for_its_own_panel() {
+        let s = rendered("4 spines[4x100G] -100G- 8 leaves[4x100G,48x25G] -25G- 48 servers");
+        assert!(
+            s.contains("100G ports on a 4-port spine\n  no - each spine is 4 short"),
+            "{s}"
+        );
+        assert!(
+            s.contains("100G ports on a 4-port leaf\n  yes - it fits"),
+            "{s}"
+        );
+        // Each verdict names one kind of switch, so there is nothing to
+        // disambiguate and no note to print.
+        assert!(!s.contains("more than one kind of switch"), "{s}");
     }
 
     #[test]
     fn a_trunk_port_count_says_it_is_the_whole_fabric() {
         // The Ports line above it counts one switch's front panel, so this
         // one has to be readable as a total rather than as more of the same.
-        let mesh = rendered(8, &["@100G", "%400G"]);
+        let mesh = rendered("8 switches[400G] -100G- mesh");
         assert!(
             mesh.contains("Trunk ports    16  (across 8 switches: 64 lanes, 56 used, 8 spare)"),
             "{mesh}"
         );
-        let clos = rendered(8, &["+4", "@100G", "%400G"]);
+        let clos = rendered("4 spines[400G] -100G- 8 leaves");
         assert!(
             clos.contains("Spine ports    8  (across 4 spines: 32 lanes, 32 used, 0 spare)"),
             "{clos}"
         );
         // A hub is one switch, so there is nothing to spread the count over.
-        let star = rendered(48, &["--shape=star", "@25G", "%100G"]);
+        let star = rendered("1 hub[100G] -25G- 47 spokes");
         assert!(
             star.contains("Hub ports      12  (48 lanes, 47 used, 1 spare)"),
             "{star}"
@@ -1289,7 +1283,7 @@ mod tests {
 
     #[test]
     fn the_ratio_is_the_headline_of_its_own_section() {
-        let s = rendered(16, &["+2", "@100G", "-48@25G"]);
+        let s = rendered("2 spines -100G- 16 leaves -25G- 48 servers");
         assert!(
             s.contains("Per leaf       6:1  (1.2T attached against 200G of fabric)"),
             "{s}"
@@ -1300,23 +1294,23 @@ mod tests {
         );
         // Enough uplink, and it says so rather than leaving the reader to
         // notice which side of 1:1 the number fell.
-        let s = rendered(16, &["+12", "@100G", "-48@25G"]);
+        let s = rendered("12 spines -100G- 16 leaves -25G- 48 servers");
         assert!(
             s.contains("Per leaf       1:1  (1.2T attached against 1.2T of fabric - non-blocking)"),
             "{s}"
         );
-        let s = rendered(16, &["+15", "@100G", "-48@25G"]);
+        let s = rendered("15 spines -100G- 16 leaves -25G- 48 servers");
         assert!(s.contains("Per leaf       1:1.25"), "{s}");
         // A ratio nobody can work out is not printed as though they could.
-        let s = rendered(16, &["+2", "-48@25G"]);
+        let s = rendered("2 spines -- 16 leaves -25G- 48 servers");
         assert!(s.contains("attached, fabric unknown"), "{s}");
         // And a fabric with nothing attached has no section at all.
-        assert!(!rendered(8, &["@100G"]).contains("Oversubscription"));
+        assert!(!rendered("8 switches -100G- mesh").contains("Oversubscription"));
     }
 
     #[test]
     fn a_spine_pair_says_what_losing_one_costs() {
-        let s = rendered(16, &["+2", "@100G", "-48@25G"]);
+        let s = rendered("2 spines -100G- 16 leaves -25G- 48 servers");
         assert!(
             s.contains("Spine loss     each leaf keeps 1 uplink of 2  (100G of 200G)"),
             "{s}"
@@ -1326,7 +1320,7 @@ mod tests {
             "{s}"
         );
         // One spine has nothing to lose, and is a caution rather than a row.
-        let s = rendered(16, &["+1", "@100G", "-48@25G"]);
+        let s = rendered("1 spines -100G- 16 leaves -25G- 48 servers");
         assert!(!s.contains("Spine loss"), "{s}");
         assert!(!s.contains("One spine down"), "{s}");
         assert!(
@@ -1334,43 +1328,39 @@ mod tests {
             "{s}"
         );
         // And a shape without spines never mentions them.
-        assert!(!rendered(8, &["@100G", "-24@10G"]).contains("Spine loss"));
+        assert!(!rendered("8 switches -100G- mesh -10G- 24 servers").contains("Spine loss"));
     }
 
     #[test]
     fn a_budget_can_be_asked_about_one_kind_of_port() {
-        let s = rendered(
-            8,
-            &["+4", "@100G", "%400G", "-48@25G", "=32@400G", "=4@100G"],
-        );
+        // The panel is written on the tier that has it, so the heading names
+        // that tier rather than leaving the reader to work it out.
+        let s = rendered("4 spines[32x400G] -100G- 8 leaves[4x100G,48x25G] -25G- 48 servers");
         assert!(
-            s.contains("400G ports on a 32-port switch\n  yes - it fits\n  each spine  2 of 32 ports at 400G, 30 spare"),
+            s.contains("400G ports on a 32-port spine\n  yes - it fits\n  each spine  2 of 32 ports at 400G, 30 spare"),
             "{s}"
         );
-        assert!(s.contains("100G ports on a 4-port switch"), "{s}");
+        assert!(s.contains("100G ports on a 4-port leaf"), "{s}");
         assert!(
             s.contains("each leaf  4 of 4 ports at 100G, 0 spare"),
             "{s}"
         );
 
         // Four spines at 200G is four 200G ports on a leaf that has two.
-        let s = rendered(8, &["+4", "@200G", "%400G", "-48@25G", "=2@200G"]);
+        let s = rendered("4 spines[400G] -200G- 8 leaves[2x200G,48x25G] -25G- 48 servers");
         assert!(
-            s.contains("200G ports on a 2-port switch\n  no - each leaf is 2 short"),
+            s.contains("200G ports on a 2-port leaf\n  no - each leaf is 2 short"),
             "{s}"
         );
         // And a speed nothing runs at is said outright.
-        let s = rendered(8, &["+4", "@100G", "-48@25G", "=32@400G"]);
-        assert!(
-            s.contains("yes - nothing in this plan uses a port at 400G"),
-            "{s}"
-        );
+        let s = rendered("4 spines[400G] -100G- 8 leaves[4x100G,48x25G,2x800G] -25G- 48 servers");
+        assert!(s.contains("yes - each leaf uses no port at 800G"), "{s}");
     }
 
     #[test]
     fn a_budget_that_names_a_switch_says_so_in_its_heading() {
         // Leaves and spines both at 100G, so the role is what separates them.
-        let s = rendered(8, &["+2", "@100G", "=4@100G:leaf", "=4@100G:spine"]);
+        let s = rendered("2 spines[4x100G] -100G- 8 leaves[4x100G]");
         assert!(
             s.contains(
                 "100G ports on a 4-port leaf\n  yes - it fits\n  \
@@ -1384,13 +1374,13 @@ mod tests {
         );
         // A named role with nothing at that speed says which role, rather
         // than only that nothing does.
-        let s = rendered(8, &["+2", "@100G", "=4@400G:leaf"]);
+        let s = rendered("2 spines -100G- 8 leaves[4x400G]");
         assert!(s.contains("yes - each leaf uses no port at 400G"), "{s}");
     }
 
     #[test]
     fn a_rack_of_two_leaves_reaches_both_spines() {
-        let s = rendered(2, &["+2", "@100G", "-48@25G"]);
+        let s = rendered("2 spines -100G- 2 leaves -25G- 48 servers");
         assert!(
             s.starts_with("2 leaves + 2 spines  -  leaf-spine at 100G\n"),
             "{s}"
@@ -1405,18 +1395,18 @@ mod tests {
 
     #[test]
     fn a_budget_breaks_down_a_switch_whose_ports_differ() {
-        let s = rendered(16, &["+2", "@100G", "-48@25G", "=56"]);
+        let s = rendered("2 spines -100G- 16 leaves[56] -25G- 48 servers");
         assert!(
-            s.contains("each leaf   50 of 56 ports (2 at 100G, 48 at 25G)"),
+            s.contains("each leaf  50 of 56 ports (2 at 100G, 48 at 25G)"),
             "{s}"
         );
-        let s = rendered(16, &["+2", "@100G", "-48@25G", "=48"]);
+        let s = rendered("2 spines -100G- 16 leaves[48] -25G- 48 servers");
         assert!(s.contains("no - each leaf is 2 short"), "{s}");
     }
 
     #[test]
     fn json_carries_exact_numbers() {
-        let r = report(8, &["@100G", "%400G", "=32", "--schedule"], Media::Optic);
+        let r = report("8 switches[400G,32] -100G:optic- mesh", true);
         let mut out = Vec::new();
         json(&mut out, &r, &opts(Style::plain())).unwrap();
         let s = String::from_utf8(out).unwrap();
@@ -1442,7 +1432,10 @@ mod tests {
 
     #[test]
     fn json_carries_the_servers_and_the_ratio() {
-        let r = report(16, &["+2", "@100G", "%400G", "-48@25G"], Media::Optic);
+        let r = report(
+            "2 spines[400G] -100G:optic- 16 leaves -25G- 48 servers",
+            false,
+        );
         let mut out = Vec::new();
         json(&mut out, &r, &opts(Style::plain())).unwrap();
         let s = String::from_utf8(out).unwrap();

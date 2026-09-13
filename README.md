@@ -14,8 +14,9 @@ transceivers and ports a mesh of eight costs, shows the difference a 400G port
 split into four 100G lanes makes to that, and works out the oversubscription
 the result runs at once the servers are connected.
 
-The two ship together in one archive and read the same way: a thing to work
-on, then operators for the questions about it.
+The two ship together in one archive. `prefixtool` takes a prefix and then
+operators for the questions about it; `fabrictool` takes one expression
+describing the whole fabric. Both keep the flags for what gets printed.
 
 ## Install
 
@@ -47,7 +48,7 @@ The repository is a flake, so it can be run without installing anything:
 
 ```
 nix run github:jiphex/network-prefix-cli -- 2001:db8::/52 -56 -64x2
-nix run github:jiphex/network-prefix-cli#fabrictool -- 8 @100G %400G
+nix run github:jiphex/network-prefix-cli#fabrictool -- '8 switches[400G] -100G- mesh'
 ```
 
 It can also be built, or brought into a profile or a NixOS configuration:
@@ -100,7 +101,7 @@ It builds from a checkout too:
 ```
 cargo build --release
 ./target/release/prefixtool 2001:db8::/52 -56 -64x2
-./target/release/fabrictool 8 @100G %400G
+./target/release/fabrictool '8 switches[400G] -100G- mesh'
 ```
 
 ## prefixtool
@@ -593,42 +594,60 @@ $ prefixtool 10.0.0.0/24 -24 -30 >/dev/null; echo $?
 ## fabrictool
 
 ```
-fabrictool [OPTIONS] <SWITCHES> [OP]...
+fabrictool [OPTIONS] <FABRIC>
 ```
 
-`SWITCHES` is how many switches there are to connect. A bare count answers in
-links, ports and cables; each operator adds something more it can say.
+`FABRIC` is one argument describing the whole thing, and the flags say what to
+print about it. That is the entire rule for where anything goes.
 
-### Operators
+### The fabric
 
-| Operator | Meaning |
+A fabric is a chain of tiers running from the core to the edge, and the thing
+between two tiers is the link that joins them. That is how the hardware is
+arranged, so the notation draws it:
+
+```
+4 spines[32x400G] -100G- 8 leaves[48x25G,2x200G,4x100G] -25G- 48 servers
+```
+
+Three pieces of syntax carry all of it.
+
+| Piece | Meaning |
 | --- | --- |
-| `@SPEED` | The speed of each link: `@100G`, `@25G`, `@1.6T` |
-| `%M` | Break each switch port into `M` lanes |
-| `%SPEED` | The same, worked out from the port speed instead of counted |
-| `xK`, `*K` | `K` parallel links between each pair |
-| `+S` | `S` spines above the leaves, which makes it a leaf-spine (a pair, by default) |
-| `-N@SPEED` | `N` server ports on each leaf, at that speed |
-| `-N@SPEED%P` | The same, out of `P` ports split into lanes to reach them |
-| `=N` | Each switch has `N` ports - does the plan fit? |
-| `=N@SPEED` | The same, about the `N` ports it has at one speed |
-| `=N@SPEED:WHO` | The same, about one kind of switch: `leaf`, `spine`, `hub`, `spoke` |
+| `N name` | A tier of `N` of something: `8 leaves`, `4 spines`, `24 switches`, `48 servers` |
+| `[...]` | That switch's front panel, as `count x speed` entries separated by commas |
+| `-SPEED-` | The links between the tiers either side of it |
 
-An operator carries a number, a speed or both. A choice from a fixed list -
-the shape of the fabric, what its links are made of - is a flag instead, so
-there is one rule for which is which rather than a sigil to remember for each.
+The tiers are `spines`, `leaves`, `switches`, `hub`, `spokes` and `servers`,
+and both the singular and the plural read. Two tiers of switches make a
+leaf-spine, spines first, because the chain runs downwards. A `hub` over
+`spokes` makes a star. One tier says the pattern its own switches are wired
+in, as `mesh` or `ring` on the far side of its link. Servers, where there are
+any, are the tier the chain ends with.
 
-A bare number after `%` is a lane count and a number with a unit is a port
-speed, so `%4` and `%400G` are different questions and neither has to be
-guessed at. Use the `x` form of a link count (`x2`) in `zsh`, which otherwise
-tries to glob the `*`. Flags and operators can be given in any order.
+A link carries `KxSPEED` for parallel links between each pair and `:optic`,
+`:aoc` or `:dac` for what it is made of. Write it as `--` when no speed has
+been picked and only the cable count is wanted.
+
+A front-panel entry gives a count, a speed, or both: `[32]` is thirty-two
+ports of unstated speed, `[400G]` is ports at 400G however many it takes, and
+`[32x400G]` is both. Every entry with a count is a question the report
+answers, about the switch whose panel it is written on.
+
+**Lanes are never written down.** The port that carries a link is the smallest
+one at or above the link's speed, and where the port is the faster of the two
+it breaks out. A spine with `[32x400G]` carries a 100G uplink on a 400G port
+split four ways; a leaf with `[48x25G,2x200G,4x100G]` carries that same uplink
+whole, on one of its 100G ports. A fabric with no speeds at all breaks nothing
+out and counts cables.
+
+Quote the whole thing, since it has spaces in it and a `-` at the front of a
+word. Whitespace inside is for reading by and nothing depends on it.
 
 ### Options
 
 | Flag | Meaning |
 | --- | --- |
-| `--shape <shape>` | `mesh` (default), `ring`, `star` or `leaf-spine` |
-| `--media <kind>` | What the links are made of: `optic` (default), `aoc` or `dac` |
 | `--schedule` | Print the patch schedule: which port on which switch reaches which |
 | `-n`, `--limit <N>` | Show only the first N links of the patch schedule |
 | `-q`, `--quiet` | Print the bill of materials only, one item per line |
@@ -641,9 +660,9 @@ tries to glob the `*`. Flags and operators can be given in any order.
 | Code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | Bad switch count or operator |
+| 1 | A fabric that does not read, or a count out of range |
 | 3 | The fabric cannot be built as asked |
-| 4 | `--quiet`, and an `=N` port budget does not fit |
+| 4 | `--quiet`, and a front panel does not fit |
 
 **3** is the code for a request that makes sense and still cannot be built - a
 splitter cable with nothing at the far end to plug into, say. It is separate
@@ -657,7 +676,7 @@ because it grows with the square of the switch count rather than with the
 switch count. Eight of them is twenty-eight links and fifty-six transceivers:
 
 ```
-$ fabrictool 8 @100G
+$ fabrictool '8 switches -100G- mesh'
 8 switches  -  full mesh at 100G
 
   Switches       8
@@ -693,7 +712,7 @@ so, either as a lane count (`%4`) or as the port speed to work it out from
 (`%400G`):
 
 ```
-$ fabrictool 8 @100G %400G
+$ fabrictool '8 switches[400G] -100G- mesh'
 8 switches  -  full mesh at 100G
 
   Switches       8
@@ -732,7 +751,7 @@ have to plug into ports that run at the lane speed. That is a star: the hub
 breaks out, and each spoke gives up a whole port.
 
 ```
-$ fabrictool 48 --shape=star @25G %100G --media=dac
+$ fabrictool '1 hub[100G] -25G:dac- 47 spokes'
 48 switches  -  star at 25G
 
   Switches       48
@@ -765,26 +784,26 @@ cannot be built rather than a typo, so it exits **3** and says what the two
 ways round it are:
 
 ```
-$ fabrictool 8 @100G %400G --media=dac; echo $?
+$ fabrictool '8 switches[400G] -100G:dac- mesh'; echo $?
 fabrictool: a 4-lane DAC splitter ends in modules, and in a full mesh every
 switch has the same ports, so there is nothing at 100G for those modules to
-plug into. Use --media=optic and join the lanes in a patch field, or put the
-splitter at one end only with --shape=star or --shape=leaf-spine
+plug into. Use :optic and join the lanes in a patch field, or put the
+splitter at one end only, with a hub over spokes or spines over leaves
 3
 ```
 
 ### Other shapes, and whether they fit
 
-`--shape=ring`, `--shape=star` and `--shape=leaf-spine` cost far fewer cables
-than a mesh, and the report says what that buys and what it costs: a ring of
-twenty-four is two links across the middle and twelve hops from one side to
-the other, however fast each link is.
+A ring, a star and a leaf-spine cost far fewer cables than a mesh, and the
+report says what that buys and what it costs: a ring of twenty-four is two
+links to each neighbour and twelve hops from one side to the other, however
+fast each link is.
 
 `=N` asks the question that decides whether any of this is orderable - the
 switches have `N` ports, so does the plan fit in them?
 
 ```
-$ fabrictool 48 --shape=star @25G %100G =32
+$ fabrictool '1 hub[100G,32] -25G- 47 spokes[32]'
 48 switches  -  star at 25G
 
   Switches       48
@@ -812,9 +831,12 @@ Cabling 48 switches at 25G
    12  100G hub port                   12 ports on the hub
    47  25G spoke port                  1 port on each of 47 spokes
 
-Ports on a 32-port switch
+Ports on a 32-port hub
   yes - it fits
-  the hub     12 of 32 ports at 100G, 20 spare
+  the hub  12 of 32 ports at 100G, 20 spare
+
+Ports on a 32-port spoke
+  yes - it fits
   each spoke  1 of 32 ports at 25G, 31 spare
 ```
 
@@ -823,14 +845,14 @@ separately. The hub is the one that runs out.
 
 ### Leaf-spine, servers, and oversubscription
 
-This is the shape most of it gets built in. `+2` puts two spines above the
-leaves -
-saying how many spines there are is what makes it a leaf-spine, and a pair is
-what `--shape=leaf-spine` means on its own, because that is how a rack gets
-built. `-48@25G` says what is connected to each leaf:
+This is the shape most of it gets built in. Two tiers of switches make a
+leaf-spine, and the spines come first because the chain runs from the core
+down to the edge. A pair of spines is what a rack is built with, and the
+report says so when there is only one. A last tier of servers says what is
+connected to each leaf:
 
 ```
-$ fabrictool 16 +2 @100G %400G -48@25G
+$ fabrictool '2 spines[400G] -100G- 16 leaves -25G- 48 servers'
 16 leaves + 2 spines  -  leaf-spine at 100G
 
   Switches       18  (16 leaves, 2 spines)
@@ -871,7 +893,7 @@ Read it from the bottom. Each leaf has 48 servers at 25G attached, which is
 **6:1**. The fix is more uplinks, and the ratio is the reason to buy them:
 
 ```
-$ for s in +2 +4 +6 +12; do fabrictool 16 $s @100G -48@25G | grep 'Per leaf'; done
+$ for s in 2 4 6 12; do fabrictool "$s spines -100G- 16 leaves -25G- 48 servers" | grep 'Per leaf'; done
   Per leaf       6:1  (1.2T attached against 200G of fabric)
   Per leaf       3:1  (1.2T attached against 400G of fabric)
   Per leaf       2:1  (1.2T attached against 600G of fabric)
@@ -886,7 +908,7 @@ enough - 6:1 is a design, 12:1 during a spine reload is a decision.
 One spine is allowed and says what it is:
 
 ```
-$ fabrictool 16 +1 @100G -48@25G | grep Caution
+$ fabrictool '1 spine -100G- 16 leaves -25G- 48 servers' | grep Caution
   Caution        one spine is a single point of failure; a pair is the usual build
 ```
 
@@ -894,7 +916,7 @@ A rack is often just a pair of leaves under that pair of spines, which is four
 links and every leaf on every spine:
 
 ```
-$ fabrictool 2 +2 @100G -48@25G
+$ fabrictool '2 spines -100G- 2 leaves -25G- 48 servers'
 2 leaves + 2 spines  -  leaf-spine at 100G
 
   Switches       4  (2 leaves, 2 spines)
@@ -935,7 +957,7 @@ four spines is eight ports a spine rather than thirty-two.
 Servers come out of the same front panel as the uplinks, so `=N` counts both:
 
 ```
-$ fabrictool 32 +4 @100G %400G -48@25G =56
+$ fabrictool '4 spines[400G] -100G- 32 leaves[56] -25G- 48 servers'
 32 leaves + 4 spines  -  leaf-spine at 100G
 
   Switches       36  (32 leaves, 4 spines)
@@ -970,10 +992,9 @@ Oversubscription
   One spine down 4:1  (300G of fabric left on each leaf)
   Servers        1,536 x 25G  (38.4T attached in total)
 
-Ports on a 56-port switch
+Ports on a 56-port leaf
   yes - it fits
-  each spine  8 of 56 ports at 400G, 48 spare
-  each leaf   52 of 56 ports (4 at 100G, 48 at 25G), 4 spare
+  each leaf  52 of 56 ports (4 at 100G, 48 at 25G), 4 spare
 ```
 
 A leaf whose servers arrive on split ports is spelled `-48@25G%100G` - 48
@@ -1009,7 +1030,7 @@ ordinary build - `:leaf` or `:spine` says which switches the question is
 about, and the heading says which it answered:
 
 ```
-$ fabrictool 8 +2 @100G =4@100G:leaf =4@100G:spine
+$ fabrictool '2 spines[4x100G] -100G- 8 leaves[4x100G]'
 8 leaves + 2 spines  -  leaf-spine at 100G
 
   Switches       10  (8 leaves, 2 spines)
@@ -1035,22 +1056,22 @@ Cabling 8 leaves + 2 spines at 100G
    16  100G spine port          8 ports on each of 2 spines
    16  100G leaf port           2 ports on each of 8 leaves
 
-100G ports on a 4-port leaf
-  yes - it fits
-  each leaf  2 of 4 ports at 100G, 2 spare
-
 100G ports on a 4-port spine
   no - each spine is 4 short
   each spine  8 of 4 ports at 100G, 4 short
+
+100G ports on a 4-port leaf
+  yes - it fits
+  each leaf  2 of 4 ports at 100G, 2 spare
 ```
 
 A kind of switch the fabric has not got is refused rather than answered yes,
 because it means the question was asked of the wrong fabric:
 
 ```
-$ fabrictool 8 @100G =32:leaf; echo $?
-fabrictool: a full mesh has no leaves: it has 8 switches
+$ fabrictool '8 leaves -100G- mesh'; echo $?
 1
+fabrictool: a full mesh is one tier of switches, so '8 leaves' has nothing above it: write it as '8 switches'
 ```
 
 **The first option puts one 100G link in each spine port.** It is the simplest
@@ -1065,7 +1086,7 @@ the spine's whole front panel is the thing to check, since the option costs
 it ordinary ports rather than ports at some particular speed:
 
 ```
-$ fabrictool 8 +4 @100G -48@25G =32:spine =4@100G:leaf =2@200G:leaf =48@25G:leaf
+$ fabrictool '4 spines[32] -100G- 8 leaves[48x25G,2x200G,4x100G] -25G- 48 servers'
 8 leaves + 4 spines  -  leaf-spine at 100G
 
   Switches       12  (8 leaves, 4 spines)
@@ -1102,16 +1123,16 @@ Ports on a 32-port spine
   yes - it fits
   each spine  8 of 32 ports at 100G, 24 spare
 
-100G ports on a 4-port leaf
+25G ports on a 48-port leaf
   yes - it fits
-  each leaf  4 of 4 ports at 100G, 0 spare
+  each leaf  48 of 48 ports at 25G, 0 spare
 
 200G ports on a 2-port leaf
   yes - each leaf uses no port at 200G
 
-25G ports on a 48-port leaf
+100G ports on a 4-port leaf
   yes - it fits
-  each leaf  48 of 48 ports at 25G, 0 spare
+  each leaf  4 of 4 ports at 100G, 0 spare
 ```
 
 **The second option splits each spine port into 4x100G.** That is the same 32
@@ -1119,7 +1140,7 @@ links, out of two spine ports per spine instead of eight. With optics that is a 
 breakout harness per spine port, plus a 100G transceiver at each leaf:
 
 ```
-$ fabrictool 8 +4 @100G %400G -48@25G =32@400G =4@100G =2@200G =48@25G
+$ fabrictool '4 spines[32x400G] -100G- 8 leaves[48x25G,2x200G,4x100G] -25G- 48 servers'
 8 leaves + 4 spines  -  leaf-spine at 100G
 
   Switches       12  (8 leaves, 4 spines)
@@ -1154,20 +1175,20 @@ Oversubscription
   One spine down 4:1  (300G of fabric left on each leaf)
   Servers        384 x 25G  (9.6T attached in total)
 
-400G ports on a 32-port switch
+400G ports on a 32-port spine
   yes - it fits
   each spine  2 of 32 ports at 400G, 30 spare
 
-100G ports on a 4-port switch
-  yes - it fits
-  each leaf  4 of 4 ports at 100G, 0 spare
-
-200G ports on a 2-port switch
-  yes - nothing in this plan uses a port at 200G
-
-25G ports on a 48-port switch
+25G ports on a 48-port leaf
   yes - it fits
   each leaf  48 of 48 ports at 25G, 0 spare
+
+200G ports on a 2-port leaf
+  yes - each leaf uses no port at 200G
+
+100G ports on a 4-port leaf
+  yes - it fits
+  each leaf  4 of 4 ports at 100G, 0 spare
 ```
 
 **The third option is the same split, bought as AOCs.** A 400G-to-4x100G
@@ -1175,7 +1196,7 @@ active optical splitter arrives as one assembly with its ends attached, so the
 whole spine side comes to eight cables and no transceivers at all:
 
 ```
-$ fabrictool 8 +4 @100G %400G -48@25G --media=aoc
+$ fabrictool '4 spines[32x400G] -100G:aoc- 8 leaves[48x25G,2x200G,4x100G] -25G- 48 servers'
 8 leaves + 4 spines  -  leaf-spine at 100G
 
   Switches       12  (8 leaves, 4 spines)
@@ -1207,6 +1228,21 @@ Oversubscription
   Per leaf       3:1  (1.2T attached against 400G of fabric)
   One spine down 4:1  (300G of fabric left on each leaf)
   Servers        384 x 25G  (9.6T attached in total)
+
+400G ports on a 32-port spine
+  yes - it fits
+  each spine  2 of 32 ports at 400G, 30 spare
+
+25G ports on a 48-port leaf
+  yes - it fits
+  each leaf  48 of 48 ports at 25G, 0 spare
+
+200G ports on a 2-port leaf
+  yes - each leaf uses no port at 200G
+
+100G ports on a 4-port leaf
+  yes - it fits
+  each leaf  4 of 4 ports at 100G, 0 spare
 ```
 
 **The fourth option splits into 2x200G instead.** A 400G port splits two ways
@@ -1215,7 +1251,7 @@ links would double the fabric each leaf has - but the mesh has to reach four
 spines, and a leaf with two 200G ports can only reach two of them:
 
 ```
-$ fabrictool 8 +4 @200G %400G -48@25G =32@400G =4@100G =2@200G =48@25G
+$ fabrictool '4 spines[32x400G] -200G- 8 leaves[48x25G,2x200G,4x100G] -25G- 48 servers'
 8 leaves + 4 spines  -  leaf-spine at 200G
 
   Switches       12  (8 leaves, 4 spines)
@@ -1250,20 +1286,20 @@ Oversubscription
   One spine down 2:1  (600G of fabric left on each leaf)
   Servers        384 x 25G  (9.6T attached in total)
 
-400G ports on a 32-port switch
+400G ports on a 32-port spine
   yes - it fits
   each spine  4 of 32 ports at 400G, 28 spare
 
-100G ports on a 4-port switch
-  yes - nothing in this plan uses a port at 100G
+25G ports on a 48-port leaf
+  yes - it fits
+  each leaf  48 of 48 ports at 25G, 0 spare
 
-200G ports on a 2-port switch
+200G ports on a 2-port leaf
   no - each leaf is 2 short
   each leaf  4 of 2 ports at 200G, 2 short
 
-25G ports on a 48-port switch
-  yes - it fits
-  each leaf  48 of 48 ports at 25G, 0 spare
+100G ports on a 4-port leaf
+  yes - each leaf uses no port at 100G
 ```
 
 That is the answer: **200G to every spine does not fit these leaves**, and the
@@ -1290,10 +1326,10 @@ port speed facing the fabric. Two runs answer it, since the spines are
 separate devices either way:
 
 ```
-$ fabrictool 8 +2 @200G %400G -48@25G | grep -E 'Per leaf|Spine ports'
+$ fabrictool "2 spines[400G] -200G- 8 leaves -25G- 48 servers" | grep -E 'Per leaf|Spine ports'
   Spine ports    8  (across 2 spines: 16 lanes, 16 used, 0 spare)
   Per leaf       3:1  (1.2T attached against 400G of fabric)
-$ fabrictool 8 +2 @100G %400G -48@25G | grep -E 'Per leaf|Spine ports'
+$ fabrictool "2 spines[400G] -100G- 8 leaves -25G- 48 servers" | grep -E 'Per leaf|Spine ports'
   Spine ports    4  (across 2 spines: 16 lanes, 16 used, 0 spare)
   Per leaf       6:1  (1.2T attached against 200G of fabric)
 ```
@@ -1308,7 +1344,7 @@ together.
 or `spine1:1/1` and `leaf3:2` where the switches have different jobs:
 
 ```
-$ fabrictool 8 @100G %400G --schedule -n 6
+$ fabrictool '8 switches[400G] -100G- mesh' --schedule -n 6
 8 switches  -  full mesh at 100G
 
   Switches       8
@@ -1359,7 +1395,7 @@ The report counts a fabric and the schedule lists its cables; neither shows
 its shape. `--dot` emits a Graphviz graph, which does:
 
 ```
-$ fabrictool 4 +2 @100G %400G -48@25G --dot | dot -Tpng > fabric.png
+$ fabrictool '2 spines[400G] -100G- 4 leaves -25G- 48 servers' --dot | dot -Tpng > fabric.png
 ```
 
 ```
@@ -1405,7 +1441,7 @@ the ports at its two ends, which is the same list `--schedule` prints and
 easier to check against a rack:
 
 ```
-$ fabrictool 4 +2 @100G %400G --dot --schedule
+$ fabrictool '2 spines[400G] -100G- 4 leaves' --dot --schedule
 ...
   spine1 -- leaf1 [label="spine1:1/1 - leaf1:1"];
   spine1 -- leaf2 [label="spine1:1/2 - leaf2:1"];
@@ -1428,7 +1464,7 @@ out, which is a property of the fabric rather than of the tool; `neato` or
 stable name with a tab between them:
 
 ```
-$ fabrictool 8 @100G %400G -q
+$ fabrictool '8 switches[400G] -100G- mesh' -q
 16	transceiver-400G
 16	breakout-1x4-400G
 28	coupler-100G
@@ -1439,7 +1475,7 @@ With `--schedule` it prints the schedule instead, one link per line, since
 that is what was asked for:
 
 ```
-$ fabrictool 4 --schedule -q
+$ fabrictool '4 switches -- mesh' --schedule -q
 sw1:1 sw2:1
 sw1:2 sw3:1
 sw1:3 sw4:1
@@ -1452,7 +1488,7 @@ sw3:3 sw4:3
 second as an exact integer:
 
 ```
-$ fabrictool 8 @100G %400G --json | jq '{links, trunk_ports, total: .bandwidth.total_mbps}'
+$ fabrictool '8 switches[400G] -100G- mesh' --json | jq '{links, trunk_ports, total: .bandwidth.total_mbps}'
 {
   "links": 28,
   "trunk_ports": 16,
@@ -1463,7 +1499,7 @@ $ fabrictool 8 @100G %400G --json | jq '{links, trunk_ports, total: .bandwidth.t
 And under `--quiet` an `=N` is a question, so the exit status answers it:
 
 ```
-if fabrictool 32 @100G %400G =32 -q > /dev/null; then
+if fabrictool '32 switches[400G,32] -100G- mesh' -q > /dev/null; then
     echo "it fits"
 fi
 ```
@@ -1505,7 +1541,8 @@ cargo test
 
 Unit tests cover the allocator, the operator grammar, the special-range table,
 the reverse-DNS zones, the big-number formatting, and, on the fabric side, the
-topology arithmetic, the rate parsing and the patch schedule. `tests/cli.rs`
+fabric notation, the topology arithmetic, the rate parsing and the patch
+schedule. `tests/cli.rs`
 and `tests/fabric.rs` run the real binaries and check their output and exit
 codes.
 

@@ -41,7 +41,7 @@ fn stderr(args: &[&str]) -> String {
 
 #[test]
 fn reports_on_a_bare_switch_count() {
-    let s = stdout(&["8"]);
+    let s = stdout(&["8 switches -- mesh"]);
     assert!(s.starts_with("8 switches  -  full mesh"), "{s}");
     assert!(s.contains("Links          28"), "{s}");
     assert!(s.contains("7 ports on each switch"), "{s}");
@@ -51,39 +51,45 @@ fn reports_on_a_bare_switch_count() {
 
 #[test]
 fn counts_the_optics_a_breakout_saves() {
-    let s = stdout(&["8", "@100G", "%400G"]);
+    let s = stdout(&["8 switches[400G] -100G- mesh"]);
     assert!(s.contains("2 x 400G on each switch"), "{s}");
     assert!(s.contains("16  400G transceiver"), "{s}");
     assert!(s.contains("28  duplex coupler"), "{s}");
     // The straight version of the same fabric buys more than three times as
     // many transceivers, which is the entire point of the comparison.
-    let straight = stdout(&["8", "@100G"]);
+    let straight = stdout(&["8 switches -100G- mesh"]);
     assert!(straight.contains("56  100G transceiver"), "{straight}");
 }
 
 #[test]
 fn the_shape_changes_the_counts() {
-    assert!(stdout(&["16", "--shape=ring"]).contains("Links          16"));
-    assert!(stdout(&["16", "--shape=star"]).contains("Links          15"));
-    assert!(stdout(&["16"]).contains("Links          120"));
-    assert!(stdout(&["16", "x2"]).contains("Links          240"));
+    assert!(stdout(&["16 switches -- ring"]).contains("Links          16"));
+    assert!(stdout(&["1 hub -- 15 spokes"]).contains("Links          15"));
+    assert!(stdout(&["16 switches -- mesh"]).contains("Links          120"));
+    assert!(stdout(&["16 switches -2x- mesh"]).contains("Links          240"));
 }
 
 #[test]
 fn flags_and_operators_may_be_interleaved() {
-    let a = stdout(&["8", "@100G", "--json"]);
-    let b = stdout(&["--json", "8", "@100G"]);
-    let c = stdout(&["8", "--json", "@100G"]);
+    let a = stdout(&["8 switches -100G- mesh", "--json"]);
+    let b = stdout(&["8 switches -100G- mesh", "--json"]);
+    let c = stdout(&["8 switches -100G- mesh", "--json"]);
     assert_eq!(a, b);
     assert_eq!(a, c);
     // -n takes a number, and that number is not the switch count.
-    let s = stdout(&["-n", "2", "8", "--schedule", "--color=never"]);
+    let s = stdout(&[
+        "8 switches -- mesh",
+        "-n",
+        "2",
+        "--schedule",
+        "--color=never",
+    ]);
     assert!(s.contains("... (showing 2 of 28"), "{s}");
 }
 
 #[test]
 fn a_schedule_lists_every_link_when_asked() {
-    let s = stdout(&["8", "--schedule", "--color=never"]);
+    let s = stdout(&["8 switches -- mesh", "--schedule", "--color=never"]);
     let patches = s.lines().filter(|l| l.contains("->")).count();
     assert_eq!(patches, 28);
     assert!(s.contains("sw1:1  ->  sw2:1"), "{s}");
@@ -92,13 +98,13 @@ fn a_schedule_lists_every_link_when_asked() {
 
 #[test]
 fn quiet_is_a_bill_of_materials_one_item_per_line() {
-    let s = stdout(&["8", "@100G", "%400G", "-q"]);
+    let s = stdout(&["8 switches[400G] -100G- mesh", "-q"]);
     assert_eq!(
         s,
         "16\ttransceiver-400G\n16\tbreakout-1x4-400G\n28\tcoupler-100G\n16\tport-switch-400G\n"
     );
     // And the schedule when the schedule is what was asked for.
-    let s = stdout(&["4", "--schedule", "-q"]);
+    let s = stdout(&["4 switches -- mesh", "--schedule", "-q"]);
     assert_eq!(s.lines().count(), 6);
     assert_eq!(s.lines().next(), Some("sw1:1 sw2:1"));
 }
@@ -106,8 +112,8 @@ fn quiet_is_a_bill_of_materials_one_item_per_line() {
 #[test]
 fn machine_output_is_never_coloured() {
     for args in [
-        vec!["8", "@100G", "-q", "--color=always"],
-        vec!["8", "@100G", "--json", "--color=always"],
+        vec!["8 switches -100G- mesh", "-q", "--color=always"],
+        vec!["8 switches -100G- mesh", "--json", "--color=always"],
     ] {
         let s = stdout(&args);
         assert!(!s.contains('\x1b'), "{args:?} came out coloured");
@@ -117,9 +123,9 @@ fn machine_output_is_never_coloured() {
 #[test]
 fn colour_never_changes_the_layout() {
     for args in [
-        vec!["8", "@100G", "%400G", "=32", "--schedule"],
-        vec!["9", "@25G", "%100G", "--shape=star", "=8"],
-        vec!["4", "--shape=ring", "x2"],
+        vec!["8 switches[400G,32] -100G- mesh", "--schedule"],
+        vec!["1 hub[100G,8] -25G- 8 spokes[8]"],
+        vec!["4 switches -2x- ring"],
     ] {
         let mut painted = args.clone();
         painted.push("--color=always");
@@ -131,7 +137,7 @@ fn colour_never_changes_the_layout() {
 
 #[test]
 fn json_is_exact_and_parseable_shaped() {
-    let s = stdout(&["8", "@100G", "%400G", "=32", "--schedule", "--json"]);
+    let s = stdout(&["8 switches[400G,32] -100G- mesh", "--schedule", "--json"]);
     for want in [
         "\"switches\": 8",
         "\"links\": 28",
@@ -148,12 +154,12 @@ fn json_is_exact_and_parseable_shaped() {
 
 #[test]
 fn a_port_budget_is_answered_in_the_report() {
-    let s = stdout(&["8", "@100G", "%400G", "=32", "--color=never"]);
+    let s = stdout(&["8 switches[400G,32] -100G- mesh", "--color=never"]);
     assert!(
         s.contains("Ports on a 32-port switch\n  yes - it fits"),
         "{s}"
     );
-    let out = run(&["48", "@100G", "--shape=star", "=32", "--color=never"]);
+    let out = run(&["1 hub[32] -100G- 47 spokes[32]", "--color=never"]);
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.contains("no - the hub is 15 short"), "{s}");
     // Only --quiet turns the question into an exit status; on screen the
@@ -164,22 +170,27 @@ fn a_port_budget_is_answered_in_the_report() {
 #[test]
 fn under_quiet_a_port_budget_is_the_exit_status() {
     assert_eq!(
-        run(&["8", "%400G", "@100G", "=32", "-q"]).status.code(),
+        run(&["8 switches[400G,32] -100G- mesh", "-q"])
+            .status
+            .code(),
         Some(0)
     );
     assert_eq!(
-        run(&["48", "--shape=star", "=32", "-q"]).status.code(),
+        run(&["1 hub[32] -- 47 spokes[32]", "-q"]).status.code(),
         Some(4)
     );
     // A typo is not a confident no.
-    let out = run(&["48", "--shape=star", "=lots", "-q"]);
+    let out = run(&["1 hub[lots] -- 47 spokes[lots]", "-q"]);
     assert_eq!(out.status.code(), Some(1));
     assert_ne!(out.status.code(), Some(4), "a typo looked like a no");
 }
 
 #[test]
 fn a_leaf_spine_counts_its_two_populations_apart() {
-    let s = stdout(&["16", "+2", "@100G", "%400G", "-48@25G", "--color=never"]);
+    let s = stdout(&[
+        "2 spines[400G] -100G- 16 leaves -25G- 48 servers",
+        "--color=never",
+    ]);
     assert!(
         s.starts_with("16 leaves + 2 spines  -  leaf-spine at 100G"),
         "{s}"
@@ -198,7 +209,7 @@ fn a_leaf_spine_counts_its_two_populations_apart() {
 /// pair of spines, every leaf on every spine.
 #[test]
 fn a_rack_is_a_pair_of_spines_and_survives_losing_one() {
-    let s = stdout(&["2", "+2", "@100G", "-48@25G", "--color=never"]);
+    let s = stdout(&["2 spines -100G- 2 leaves -25G- 48 servers", "--color=never"]);
     assert!(
         s.starts_with("2 leaves + 2 spines  -  leaf-spine at 100G"),
         "{s}"
@@ -211,7 +222,7 @@ fn a_rack_is_a_pair_of_spines_and_survives_losing_one() {
     );
     assert!(s.contains("One spine down 12:1"), "{s}");
     // Both leaves reach both spines, and nothing is wired twice.
-    let schedule = stdout(&["2", "+2", "--schedule", "-q"]);
+    let schedule = stdout(&["2 spines -- 2 leaves", "--schedule", "-q"]);
     assert_eq!(
         schedule,
         "spine1:1 leaf1:1\nspine1:2 leaf2:1\nspine2:1 leaf1:2\nspine2:2 leaf2:2\n"
@@ -220,59 +231,70 @@ fn a_rack_is_a_pair_of_spines_and_survives_losing_one() {
 
 #[test]
 fn a_leaf_spine_is_a_pair_of_spines_unless_told_otherwise() {
-    let s = stdout(&["16", "--shape=leaf-spine", "@100G", "--color=never"]);
+    let s = stdout(&["2 spines -100G- 16 leaves", "--color=never"]);
     assert!(s.starts_with("16 leaves + 2 spines"), "{s}");
     // One is still allowed, and still says what it is.
-    let s = stdout(&["16", "+1", "@100G", "--color=never"]);
+    let s = stdout(&["1 spines -100G- 16 leaves", "--color=never"]);
     assert!(s.starts_with("16 leaves + 1 spine"), "{s}");
     assert!(s.contains("single point of failure"), "{s}");
 }
 
 #[test]
 fn uplinks_change_the_ratio_and_nothing_else_about_the_servers() {
-    let ratio = |spines: &str| {
-        let s = stdout(&["16", spines, "@100G", "-48@25G", "--color=never"]);
+    let ratio = |spines: u32| {
+        let s = stdout(&[
+            &format!("{spines} spines -100G- 16 leaves -25G- 48 servers"),
+            "--color=never",
+        ]);
         s.lines()
             .find(|l| l.trim_start().starts_with("Per leaf"))
             .map(|l| l.split_whitespace().nth(2).unwrap().to_string())
             .expect("a ratio")
     };
-    assert_eq!(ratio("+2"), "6:1");
-    assert_eq!(ratio("+4"), "3:1");
-    assert_eq!(ratio("+6"), "2:1");
-    assert_eq!(ratio("+12"), "1:1");
+    assert_eq!(ratio(2), "6:1");
+    assert_eq!(ratio(4), "3:1");
+    assert_eq!(ratio(6), "2:1");
+    assert_eq!(ratio(12), "1:1");
 }
 
 #[test]
 fn server_ports_count_against_the_port_budget() {
     // Two uplinks and 48 servers is 50 ports, whatever they are facing.
-    let s = stdout(&["16", "+2", "@100G", "-48@25G", "=56", "--color=never"]);
+    let s = stdout(&[
+        "2 spines -100G- 16 leaves[56] -25G- 48 servers",
+        "--color=never",
+    ]);
     assert!(
-        s.contains("each leaf   50 of 56 ports (2 at 100G, 48 at 25G)"),
+        s.contains("each leaf  50 of 56 ports (2 at 100G, 48 at 25G)"),
         "{s}"
     );
     assert_eq!(
-        run(&["16", "+2", "@100G", "-48@25G", "=48", "-q"])
+        run(&["2 spines -100G- 16 leaves[48] -25G- 48 servers", "-q"])
             .status
             .code(),
         Some(4),
         "50 ports do not fit in 48"
     );
     // Arriving on split ports, the same servers take twelve ports, not 48.
-    let s = stdout(&["16", "+2", "@100G", "-48@25G%100G", "=56", "--color=never"]);
-    assert!(s.contains("each leaf   14 of 56 ports"), "{s}");
+    let s = stdout(&[
+        "2 spines -100G- 16 leaves[100G,56] -25G- 48 servers",
+        "--color=never",
+    ]);
+    assert!(s.contains("each leaf  14 of 56 ports"), "{s}");
 }
 
 /// Four 32-port 400G spines, four racks of paired leaves, and leaves whose
 /// front panel is 48x25G + 2x200G + 4x100G: which cabling options fit.
 #[test]
 fn a_real_build_is_checked_against_the_leaf_it_has() {
-    let profile = ["=32@400G", "=4@100G", "=2@200G", "=48@25G"];
+    // The leaf's real front panel, written once on the tier that has it.
+    const LEAF: &str = "[48x25G,2x200G,4x100G]";
 
     // 100G to every spine, out of the spine's 400G ports split four ways.
-    let mut args = vec!["8", "+4", "@100G", "%400G", "-48@25G", "--color=never"];
-    args.extend(profile);
-    let s = stdout(&args);
+    let s = stdout(&[
+        &format!("4 spines[32x400G] -100G- 8 leaves{LEAF} -25G- 48 servers"),
+        "--color=never",
+    ]);
     assert!(
         s.contains("each spine  2 of 32 ports at 400G, 30 spare"),
         "{s}"
@@ -289,15 +311,16 @@ fn a_real_build_is_checked_against_the_leaf_it_has() {
 
     // 200G to every spine needs four 200G ports on a leaf that has two, so
     // the full mesh cannot be kept at that speed.
-    let mut args = vec!["8", "+4", "@200G", "%400G", "-48@25G", "--color=never"];
-    args.extend(profile);
-    let s = stdout(&args);
+    let s = stdout(&[
+        &format!("4 spines[32x400G] -200G- 8 leaves{LEAF} -25G- 48 servers"),
+        "--color=never",
+    ]);
     assert!(
-        s.contains("200G ports on a 2-port switch\n  no - each leaf is 2 short"),
+        s.contains("200G ports on a 2-port leaf\n  no - each leaf is 2 short"),
         "{s}"
     );
     assert_eq!(
-        run(&["8", "+4", "@200G", "%400G", "=2@200G", "-q"])
+        run(&["4 spines[400G] -200G- 8 leaves[2x200G]", "-q"])
             .status
             .code(),
         Some(4)
@@ -310,7 +333,7 @@ fn a_real_build_is_checked_against_the_leaf_it_has() {
 fn a_budget_can_name_the_switches_it_is_about() {
     // Leaves and spines both at 100G here, so the speed alone cannot separate
     // them: the leaves fit four ports and the spines do not.
-    let s = stdout(&["8", "+2", "@100G", "=4@100G:leaf", "--color=never"]);
+    let s = stdout(&["2 spines -100G- 8 leaves[4x100G]", "--color=never"]);
     assert!(s.contains("100G ports on a 4-port leaf"), "{s}");
     assert!(
         s.contains("each leaf  2 of 4 ports at 100G, 2 spare"),
@@ -324,134 +347,64 @@ fn a_budget_can_name_the_switches_it_is_about() {
         .expect("the budget section");
     assert!(!answer.contains("each spine"), "{s}");
 
-    let out = run(&["8", "+2", "@100G", "=4@100G:spine", "--color=never"]);
+    let out = run(&["2 spines[4x100G] -100G- 8 leaves", "--color=never"]);
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.contains("100G ports on a 4-port spine"), "{s}");
     assert!(s.contains("no - each spine is 4 short"), "{s}");
     assert_eq!(
-        run(&["8", "+2", "@100G", "=4@100G:spine", "-q"])
+        run(&["2 spines[4x100G] -100G- 8 leaves", "-q"])
             .status
             .code(),
         Some(4)
     );
 
-    // A kind of switch the fabric has not got is a misunderstanding of the
-    // fabric, not a plan that does not fit, so it is refused.
-    let out = run(&["8", "@100G", "=32:leaf"]);
+    // A tier the shape has not got is a misunderstanding of the fabric
+    // rather than a plan that does not fit, so the notation refuses it.
+    let out = run(&["8 leaves -100G- mesh"]);
     assert_eq!(out.status.code(), Some(1));
     let e = String::from_utf8(out.stderr).unwrap();
-    assert!(e.contains("a full mesh has no leaves"), "{e}");
-    assert!(e.contains("it has 8 switches"), "{e}");
-    assert!(stderr(&["8", "+2", "@100G", "=4@100G:banana"]).contains("not a kind of switch"));
-}
+    assert!(e.contains("one tier of switches"), "{e}");
+    assert!(stderr(&["8 racks -100G- mesh"]).contains("not a kind of tier"));
 
-/// A star of two switches is the smallest star, and its hub and spoke are
-/// still different jobs.
-#[test]
-fn the_smallest_star_keeps_its_servers() {
-    let s = stdout(&["2", "--shape=star", "@100G", "-24@10G", "--color=never"]);
-    assert!(s.contains("24 x 10G on the spoke"), "{s}");
-    assert!(s.contains("Per spoke      2.4:1"), "{s}");
-    // And the hub can be asked about.
-    let s = stdout(&["2", "--shape=star", "@100G", "=32:hub", "--color=never"]);
-    assert!(s.contains("Ports on a 32-port hub"), "{s}");
-}
-
-#[test]
-fn one_leaf_under_a_pair_of_spines_is_a_fabric() {
-    let s = stdout(&["1", "+2", "@100G", "--color=never"]);
-    assert!(s.starts_with("1 leaf + 2 spines"), "{s}");
-    assert!(s.contains("Switches       3  (1 leaf, 2 spines)"), "{s}");
-    assert!(s.contains("Links          2"), "{s}");
-    // A lone switch with nothing above it is still not a fabric.
-    assert_eq!(run(&["1", "@100G"]).status.code(), Some(1));
-}
-
-#[test]
-fn servers_hang_off_the_edge_of_whatever_shape_it_is() {
-    assert!(stdout(&["8", "-24@10G", "@100G", "--color=never"]).contains("on each switch"));
-    assert!(
-        stdout(&["8", "--shape=star", "-24@10G", "@100G", "--color=never"])
-            .contains("on each spoke")
-    );
-    assert!(stdout(&["8", "+2", "-24@10G", "@100G", "--color=never"]).contains("on each leaf"));
-    // Nothing hangs off a fabric nobody mentioned servers for.
-    assert!(!stdout(&["8", "@100G"]).contains("Oversubscription"));
-}
-
-#[test]
-fn the_schedule_names_spines_and_leaves() {
-    let s = stdout(&["4", "+2", "--schedule", "-q"]);
-    assert_eq!(
-        s,
-        "spine1:1 leaf1:1\nspine1:2 leaf2:1\nspine1:3 leaf3:1\nspine1:4 leaf4:1\n\
-         spine2:1 leaf1:2\nspine2:2 leaf2:2\nspine2:3 leaf3:2\nspine2:4 leaf4:2\n"
-    );
-}
-
-/// The drawing is the one output that shows the shape rather than counting
-/// it, so what matters is that it is a graph of the right fabric.
-#[test]
-fn dot_draws_the_fabric() {
-    let s = stdout(&["4", "+2", "@100G", "%400G", "-48@25G", "--dot"]);
-    assert!(
-        s.starts_with("// fabrictool: 4 leaves + 2 spines - leaf-spine at 100G"),
-        "{s}"
-    );
-    assert!(s.contains("subgraph cluster_spine {"), "{s}");
-    assert!(
-        s.contains("leaf1 [label=\"leaf1\\n2 x 100G\\n48 x 25G servers\"]"),
-        "{s}"
-    );
-    // Every leaf reaches every spine, and each pair gets one edge.
-    assert_eq!(s.matches(" -- ").count(), 8);
-    // It is never coloured, because it is another program's input.
-    let painted = stdout(&["4", "+2", "@100G", "--dot", "--color=always"]);
-    assert!(!painted.contains('\x1b'), "{painted}");
-    // With --schedule it draws a cable at a time, ports and all.
-    let s = stdout(&["4", "+2", "@100G", "%400G", "--dot", "--schedule"]);
-    assert!(s.contains("[label=\"spine1:1/1 - leaf1:1\"]"), "{s}");
-}
-
-#[test]
-fn a_fabric_that_cannot_be_built_is_not_the_same_as_bad_input() {
-    // A splitter DAC into a mesh is coherent, and has nothing to plug into.
-    let out = run(&["8", "@100G", "%400G", "--media=dac"]);
+    let out = run(&["8 switches[400G] -100G:dac- mesh"]);
     assert_eq!(out.status.code(), Some(3));
     let e = String::from_utf8(out.stderr).unwrap();
-    assert!(e.contains("--shape=star"), "{e}");
+    assert!(e.contains("a hub over spokes"), "{e}");
 
     // Bad input, by contrast, is 1 all the way down.
-    for args in [
-        vec!["1"],
-        vec!["0"],
-        vec!["banana"],
-        vec!["8", "@banana"],
-        vec!["8", "/banana"],
-        vec!["8", "%0"],
-        vec!["8", "@40G", "%100G"],
-        vec!["8", "@100G", "@400G"],
-        vec!["8", "+2", "--shape=mesh"],
-        vec!["8", "+0"],
-        vec!["8", "-48"],
-        vec!["8", "-48@banana"],
+    for fabric in [
+        "1 switches -- mesh",
+        "0 switches -- mesh",
+        "banana",
+        "8 switches -banana- mesh",
+        "8 switches -- banana",
+        "8 switches[] -100G- mesh",
+        "8 switches[40G] -100G- mesh",
+        "8 switches -100G- -400G- mesh",
+        "2 spines -- 8 switches",
+        "0 spines -- 8 leaves",
+        "2 spines -100G- 8 leaves -25G- 48",
+        "2 spines -100G- 8 leaves -banana- 48 servers",
+        "2 spines -400G- 8 spines -100G- 16 leaves",
     ] {
-        assert_eq!(run(&args).status.code(), Some(1), "{args:?}");
+        assert_eq!(run(&[fabric]).status.code(), Some(1), "{fabric}");
     }
 }
 
 #[test]
 fn errors_say_what_to_do_about_it() {
-    assert!(stderr(&["8", "%400G"]).contains("@100G"));
-    assert!(stderr(&["1"]).contains("not a fabric"));
-    // A sigil that is really a flag is answered with the flag.
-    assert!(stderr(&["8", "/banana"]).contains("--shape=mesh, ring"));
-    assert!(stderr(&["8", "/ring"]).contains("the shape is a flag"));
-    assert!(stderr(&["8", "."]).contains("the patch schedule is --schedule"));
+    assert!(stderr(&["1 switches -- mesh"]).contains("not a fabric"));
+    // A tier says what it counts, and the message lists what it could be.
+    assert!(stderr(&["8 -- mesh"]).contains("spines, leaves, switches"));
+    assert!(stderr(&["8 racks -- mesh"]).contains("not a kind of tier"));
+    // A port that cannot carry its link says what the switch does have.
+    assert!(stderr(&["8 switches[100G] -400G- mesh"]).contains("no port on"));
+    // A third tier of switches is named for what it is.
+    assert!(stderr(&["2 spines -400G- 8 spines -100G- 16 leaves"]).contains("super-spine layer"));
     // On stderr, prefixed, so it never reaches a pipeline's data - and a
     // run that worked says nothing there at all.
-    assert!(stderr(&["1"]).starts_with("fabrictool:"));
-    assert!(stderr(&["8"]).is_empty());
+    assert!(stderr(&["1 switches -- mesh"]).starts_with("fabrictool:"));
+    assert!(stderr(&["8 switches -- mesh"]).is_empty());
 }
 
 #[test]
@@ -459,13 +412,16 @@ fn the_report_never_argues_with_itself() {
     // Every count in the report is derived from the same plan, so the
     // headline link count and the schedule have to agree, whatever the shape.
     for args in [
-        vec!["7", "--schedule"],
-        vec!["7", "--shape=ring", "--schedule"],
-        vec!["7", "--shape=star", "--schedule"],
-        vec!["5", "x3", "--schedule"],
-        vec!["6", "@100G", "%400G", "--schedule"],
-        vec!["6", "+2", "--schedule"],
-        vec!["6", "+3", "@100G", "%400G", "-24@10G", "--schedule"],
+        vec!["7 switches -- mesh", "--schedule"],
+        vec!["7 switches -- ring", "--schedule"],
+        vec!["1 hub -- 6 spokes", "--schedule"],
+        vec!["5 switches -3x- mesh", "--schedule"],
+        vec!["6 switches[400G] -100G- mesh", "--schedule"],
+        vec!["2 spines -- 6 leaves", "--schedule"],
+        vec![
+            "3 spines[400G] -100G- 6 leaves[24x10G] -10G- 24 servers",
+            "--schedule",
+        ],
     ] {
         let mut with_colour = args.clone();
         with_colour.push("--color=never");
