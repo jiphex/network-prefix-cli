@@ -149,22 +149,6 @@ pub fn text(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         rows(w, o, "Server ports", servers)?;
     }
 
-    field(
-        w,
-        o,
-        "Bisection",
-        &match p.speed {
-            Some(s) => format!(
-                "{}  {}",
-                s.total(p.bisection),
-                o.style.dim(&format!(
-                    "({} across the middle)",
-                    plural(p.bisection, "link")
-                ))
-            ),
-            None => format!("{} across the middle", plural(p.bisection, "link")),
-        },
-    )?;
     if let Some(s) = p.speed {
         field(
             w,
@@ -869,11 +853,6 @@ pub fn json(w: &mut impl Write, r: &Report, o: &Opts) -> io::Result<()> {
         (
             "bandwidth",
             J::Obj(vec![
-                ("bisection_links", json::n(p.bisection)),
-                (
-                    "bisection_mbps",
-                    p.speed.map_or(J::Null, |s| json::n(s.mbps() * p.bisection)),
-                ),
                 (
                     "per_pair_mbps",
                     p.speed.map_or(J::Null, |s| json::n(s.mbps() * p.per_pair)),
@@ -1107,7 +1086,6 @@ mod tests {
         assert!(s.contains("Links          28"), "{s}");
         assert!(s.contains("2 x 400G on each switch"), "{s}");
         assert!(s.contains("(4 lanes each: 7 used, 1 spare)"), "{s}");
-        assert!(s.contains("Bisection      1.6T"), "{s}");
         assert!(s.contains("Fabric total   2.8T"), "{s}");
     }
 
@@ -1157,7 +1135,12 @@ mod tests {
         assert!(s.starts_with("8 switches  -  full mesh\n"), "{s}");
         assert!(!s.contains("Link speed"), "{s}");
         assert!(!s.contains("Fabric total"), "{s}");
-        assert!(s.contains("16 links across the middle"), "{s}");
+        // The counts that do not need a rate are still all there.
+        assert!(
+            s.contains("Links          28  (1 link between each pair)"),
+            "{s}"
+        );
+        assert!(s.contains("Ports          7 ports on each switch"), "{s}");
     }
 
     #[test]
@@ -1445,7 +1428,6 @@ mod tests {
             "\"arrangement\": \"split-both-ends\"",
             "\"trunk_ports\": 16",
             "\"spare_lanes\": 8",
-            "\"bisection_mbps\": 1600000",
             "\"total_mbps\": 2800000",
             "\"fits\": true",
             "\"listed\": 28",

@@ -666,7 +666,6 @@ $ fabrictool 8 @100G
   Link speed     100G
   Per switch     7 links, 700G
   Ports          7 x 100G on each switch
-  Bisection      1.6T  (16 links across the middle)
   Fabric total   2.8T  (28 x 100G, one direction)
   Hops           1  (every switch reaches every other directly)
   Resilience     6 links may fail before the fabric splits
@@ -682,10 +681,9 @@ Cabling 8 switches at 100G
 ```
 
 Everything after the first two lines is a consequence of the shape.
-**Bisection** is what crosses the middle when the fabric is cut into halves,
-which is the bandwidth available when the traffic is as awkward as it can be.
 **Resilience** is how many links can fail before some switch cannot reach some
-other. **Hops** is the worst case, switch to switch.
+other. **Hops** is the worst case, switch to switch. **Fabric total** adds up
+every link in one direction.
 
 ### Breaking a port out
 
@@ -704,7 +702,6 @@ $ fabrictool 8 @100G %400G
   Link speed     100G
   Per switch     7 links, 700G
   Ports          2 x 400G on each switch  (4 lanes each: 7 used, 1 spare)
-  Bisection      1.6T  (16 links across the middle)
   Fabric total   2.8T  (28 x 100G, one direction)
   Hops           1  (every switch reaches every other directly)
   Resilience     6 links may fail before the fabric splits
@@ -746,7 +743,6 @@ $ fabrictool 48 --shape=star @25G %100G --media=dac
                  each spoke 1 link, 25G
   Ports          12 x 100G on the hub  (4 lanes each: 47 used, 1 spare)
                  1 x 25G on each spoke
-  Bisection      600G  (24 links across the middle)
   Fabric total   1.175T  (47 x 25G, one direction)
   Hops           2  (spoke to hub to spoke)
   Resilience     any single link failure splits the fabric
@@ -799,7 +795,6 @@ $ fabrictool 48 --shape=star @25G %100G =32
                  each spoke 1 link, 25G
   Ports          12 x 100G on the hub  (4 lanes each: 47 used, 1 spare)
                  1 x 25G on each spoke
-  Bisection      600G  (24 links across the middle)
   Fabric total   1.175T  (47 x 25G, one direction)
   Hops           2  (spoke to hub to spoke)
   Resilience     any single link failure splits the fabric
@@ -847,7 +842,6 @@ $ fabrictool 16 +2 @100G %400G -48@25G
   Ports          4 x 400G on each spine  (4 lanes each: 16 used, 0 spare)
                  2 x 100G on each leaf
   Server ports   48 x 25G on each leaf
-  Bisection      1.6T  (16 links across the middle)
   Fabric total   3.2T  (32 x 100G, one direction)
   Hops           2  (leaf to spine to leaf)
   Resilience     1 link may fail before the fabric splits
@@ -912,7 +906,6 @@ $ fabrictool 2 +2 @100G -48@25G
   Ports          2 x 100G on each spine
                  2 x 100G on each leaf
   Server ports   48 x 25G on each leaf
-  Bisection      200G  (2 links across the middle)
   Fabric total   400G  (4 x 100G, one direction)
   Hops           2  (leaf to spine to leaf)
   Resilience     1 link may fail before the fabric splits
@@ -954,7 +947,6 @@ $ fabrictool 32 +4 @100G %400G -48@25G =56
   Ports          8 x 400G on each spine  (4 lanes each: 32 used, 0 spare)
                  4 x 100G on each leaf
   Server ports   48 x 25G on each leaf
-  Bisection      6.4T  (64 links across the middle)
   Fabric total   12.8T  (128 x 100G, one direction)
   Hops           2  (leaf to spine to leaf)
   Resilience     3 links may fail before the fabric splits
@@ -1028,7 +1020,6 @@ $ fabrictool 8 +2 @100G =4@100G:leaf =4@100G:spine
                  each leaf 2 links, 200G
   Ports          8 x 100G on each spine
                  2 x 100G on each leaf
-  Bisection      800G  (8 links across the middle)
   Fabric total   1.6T  (16 x 100G, one direction)
   Hops           2  (leaf to spine to leaf)
   Resilience     1 link may fail before the fabric splits
@@ -1086,7 +1077,6 @@ $ fabrictool 8 +4 @100G -48@25G =32:spine =4@100G:leaf =2@200G:leaf =48@25G:leaf
   Ports          8 x 100G on each spine
                  4 x 100G on each leaf
   Server ports   48 x 25G on each leaf
-  Bisection      1.6T  (16 links across the middle)
   Fabric total   3.2T  (32 x 100G, one direction)
   Hops           2  (leaf to spine to leaf)
   Resilience     3 links may fail before the fabric splits
@@ -1141,7 +1131,6 @@ $ fabrictool 8 +4 @100G %400G -48@25G =32@400G =4@100G =2@200G =48@25G
   Ports          2 x 400G on each spine  (4 lanes each: 8 used, 0 spare)
                  4 x 100G on each leaf
   Server ports   48 x 25G on each leaf
-  Bisection      1.6T  (16 links across the middle)
   Fabric total   3.2T  (32 x 100G, one direction)
   Hops           2  (leaf to spine to leaf)
   Resilience     3 links may fail before the fabric splits
@@ -1198,7 +1187,6 @@ $ fabrictool 8 +4 @100G %400G -48@25G --media=aoc
   Ports          2 x 400G on each spine  (4 lanes each: 8 used, 0 spare)
                  4 x 100G on each leaf
   Server ports   48 x 25G on each leaf
-  Bisection      1.6T  (16 links across the middle)
   Fabric total   3.2T  (32 x 100G, one direction)
   Hops           2  (leaf to spine to leaf)
   Resilience     3 links may fail before the fabric splits
@@ -1239,7 +1227,6 @@ $ fabrictool 8 +4 @200G %400G -48@25G =32@400G =4@100G =2@200G =48@25G
   Ports          4 x 400G on each spine  (2 lanes each: 8 used, 0 spare)
                  4 x 200G on each leaf
   Server ports   48 x 25G on each leaf
-  Bisection      3.2T  (16 links across the middle)
   Fabric total   6.4T  (32 x 200G, one direction)
   Hops           2  (leaf to spine to leaf)
   Resilience     3 links may fail before the fabric splits
@@ -1330,7 +1317,6 @@ $ fabrictool 8 @100G %400G --schedule -n 6
   Link speed     100G
   Per switch     7 links, 700G
   Ports          2 x 400G on each switch  (4 lanes each: 7 used, 1 spare)
-  Bisection      1.6T  (16 links across the middle)
   Fabric total   2.8T  (28 x 100G, one direction)
   Hops           1  (every switch reaches every other directly)
   Resilience     6 links may fail before the fabric splits
@@ -1466,11 +1452,11 @@ sw3:3 sw4:3
 second as an exact integer:
 
 ```
-$ fabrictool 8 @100G %400G --json | jq '{links, trunk_ports, bisection: .bandwidth.bisection_mbps}'
+$ fabrictool 8 @100G %400G --json | jq '{links, trunk_ports, total: .bandwidth.total_mbps}'
 {
   "links": 28,
   "trunk_ports": 16,
-  "bisection": 1600000
+  "total": 2800000
 }
 ```
 

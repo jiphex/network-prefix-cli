@@ -226,8 +226,6 @@ pub struct Plan {
     pub hops: u64,
     /// Links that have to fail before the fabric is in two pieces.
     pub resilience: u64,
-    /// Links crossing the middle, when the fabric is cut into two halves.
-    pub bisection: u64,
     /// Things that are worth a second look but do not stop the plan.
     pub cautions: Vec<String>,
 }
@@ -463,24 +461,6 @@ impl Shape {
         }
     }
 
-    /// Links crossing a cut that leaves half the switches on each side - the
-    /// bandwidth available when the traffic is as awkward as it can be.
-    fn bisection(&self) -> u64 {
-        let k = self.per_pair;
-        match self.topology {
-            Topology::Mesh => (self.count / 2) * self.count.div_ceil(2) * k,
-            Topology::Ring if self.count == 2 => k,
-            // A ring has to be cut in two places to be cut at all.
-            Topology::Ring => 2 * k,
-            // Leave the hub with as many spokes as will fit on its side, and
-            // the cut is the spokes on the other side.
-            Topology::Star => (self.count / 2) * k,
-            // Everything between two halves of the leaves goes up and comes
-            // back down, so the narrower half's uplinks are the limit.
-            Topology::LeafSpine => (self.count / 2) * self.spines * k,
-        }
-    }
-
     /// Who the switches are, and which of them break out.
     fn roles(&self, splits: bool) -> Vec<(Role, u64, u64, bool)> {
         let degrees = self.degrees();
@@ -639,7 +619,6 @@ fn plan(
         materials,
         hops: shape.hops(),
         resilience: shape.resilience(),
-        bisection: shape.bisection(),
         cautions,
     })
 }
@@ -1220,18 +1199,6 @@ mod tests {
     }
 
     #[test]
-    fn bandwidth_counts_are_what_the_shapes_promise() {
-        // A mesh of 8 cut down the middle is four switches talking to four.
-        assert_eq!(plan_of(8, &[]).bisection, 16);
-        assert_eq!(plan_of(8, &["x2"]).bisection, 32);
-        // A ring is two links wherever it is cut, however big it is.
-        assert_eq!(plan_of(64, &["/ring"]).bisection, 2);
-        assert_eq!(plan_of(8, &["/star"]).bisection, 4);
-        // And an odd mesh is the two nearest halves.
-        assert_eq!(plan_of(7, &[]).bisection, 12);
-    }
-
-    #[test]
     fn resilience_and_hops_describe_the_shape() {
         let mesh = plan_of(8, &[]);
         assert_eq!((mesh.hops, mesh.resilience), (1, 7));
@@ -1253,8 +1220,6 @@ mod tests {
         assert_eq!(p.sides[1].switches, 16);
         // Two hops, and a leaf is cut off only when all its uplinks are.
         assert_eq!((p.hops, p.resilience), (2, 2));
-        // Half the leaves' uplinks are what crosses the middle.
-        assert_eq!(p.bisection, 16);
     }
 
     #[test]
