@@ -317,7 +317,7 @@ Carve from 2001:db8::/52
   /64      2001:db8:0:100::/64  1 x /64
   /64      2001:db8:0:101::/64  1 x /64
 
-  Remaining      ~7.1e22 addresses in 10 blocks
+  Remaining      ~2^76 (~7.1e22) addresses in 10 blocks
   Largest block  2001:db8:0:800::/53  (2,048 x /64)
 
 Map of 2001:db8::/52
@@ -327,7 +327,7 @@ Map of 2001:db8::/52
      2001:db8:0:102::/63
      2001:db8:0:104::/62
      2001:db8:0:108::/61
-     ... 7 blocks, ~7.1e22 addresses (use --all)
+     ... 7 blocks, ~2^76 (~7.1e22) addresses (use --all)
 ```
 
 The map underneath shows the parent laid out block by block, with the
@@ -439,7 +439,7 @@ $ prefixtool 10.0.0.0/24 +10.0.3.0/24
 ...
 Aggregate 10.0.0.0/24 with 10.0.3.0/24
   Smallest       10.0.0.0/22  (1,024 addresses, 1,022 usable)
-  Also covers    2 blocks neither prefix uses
+  Also covers    2 blocks no input uses
     10.0.1.0/24
     10.0.2.0/24
 ```
