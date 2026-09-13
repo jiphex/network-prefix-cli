@@ -242,7 +242,7 @@ mod tests {
     fn totals_are_exact_while_they_are_readable() {
         assert_eq!(describe_sum(&[]), "0");
         assert_eq!(describe_sum(&[Count::pow2(8), Count::pow2(8)]), "512");
-        // 2^31 + 2^31 == 2^32, still readable.
+        // 2^31 + 2^31 comes to 2^32, which is still readable.
         assert_eq!(
             describe_sum(&[Count::pow2(31), Count::pow2(31)]),
             "4,294,967,296"
@@ -306,10 +306,10 @@ mod tests {
 
     #[test]
     fn sums_mixed_sizes() {
-        // 2^8 + 2^8 == 2^9
+        // 2^8 + 2^8 comes to 2^9.
         let s = sum_grouped(&[Count::pow2(8), Count::pow2(8)]);
         assert_eq!(s, "512");
-        // a /53 plus a /54 worth of a v6 space
+        // A /53 plus a /54 of v6 space adds up like this.
         let s = sum_grouped(&[Count::pow2(75), Count::pow2(74)]);
         assert_eq!(s, "56,668,397,794,435,742,564,352");
     }

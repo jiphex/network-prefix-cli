@@ -194,7 +194,8 @@ fn aggregates_two_prefixes() {
 fn several_pluses_aggregate_together_not_pairwise() {
     let s = stdout(&["10.0.0.0/24", "+10.0.1.0/24", "+10.1.0.0/16"]);
 
-    // One aggregate covering everything, not one pairing per operator.
+    // The operators make one aggregate covering everything, not one pairing
+    // each.
     assert_eq!(s.matches("Aggregate ").count(), 1, "{s}");
     assert!(s.contains("Aggregate 10.0.0.0/24 with 10.0.1.0/24 and 10.1.0.0/16"));
     assert!(s.contains("10.0.0.0/15"));
@@ -485,7 +486,7 @@ fn quiet_makes_a_lookup_a_predicate() {
         Some(4)
     );
 
-    // Several lookups: any one outside is a fail.
+    // With several lookups, any one outside is a fail.
     assert_eq!(
         run(&["10.0.0.0/8", "=10.0.0.1", "=10.9.9.9", "-q"])
             .status
@@ -720,7 +721,7 @@ fn a_count_over_a_remainder_prints_each_part_once() {
 
 #[test]
 fn a_ratio_that_cannot_be_cut_exactly_says_what_it_gave_instead() {
-    // Two thirds of a prefix is not a prefix, so 2:1 lands on 3:1 - the same
+    // Two thirds of a prefix is not a prefix, so 2:1 becomes 3:1 - the same
     // bargain %3 makes when it hands out 2:1:1 for three equal parties.
     let s = stdout(&["10.0.0.0/24", "%2:1"]);
     assert!(s.contains("3:1  for a request of 2:1"));

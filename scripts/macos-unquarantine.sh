@@ -10,7 +10,10 @@
 # Unpacking the tarball from Terminal avoids all of this in the first place;
 # the flag is only ever set on files a browser wrote.
 #
-# Usage: ./macos-unquarantine.sh [path-to-prefixtool]
+# With no arguments it does every binary the archive ships. Name one to do
+# only that one.
+#
+# Usage: ./macos-unquarantine.sh [path-to-binary ...]
 
 set -eu
 
@@ -23,37 +26,56 @@ Darwin) ;;
 esac
 
 dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-bin=${1:-$dir/prefixtool}
 
-if [ ! -e "$bin" ]; then
-	echo "error: no prefixtool found at $bin" >&2
-	echo "usage: $0 [path-to-prefixtool]" >&2
-	exit 1
-fi
+unquarantine() {
+	bin=$1
+	echo "==> $bin"
 
-echo "==> $bin"
+	if xattr -p com.apple.quarantine "$bin" >/dev/null 2>&1; then
+		xattr -d com.apple.quarantine "$bin"
+		echo "    cleared the quarantine flag"
+	else
+		echo "    no quarantine flag set"
+	fi
 
-if xattr -p com.apple.quarantine "$bin" >/dev/null 2>&1; then
-	xattr -d com.apple.quarantine "$bin"
-	echo "    cleared the quarantine flag"
+	chmod +x "$bin"
+
+	# arm64 macOS kills a binary whose signature does not match its contents,
+	# which looks like an unexplained "killed: 9" rather than a signing error.
+	if codesign --verify --strict "$bin" >/dev/null 2>&1; then
+		echo "    signature is intact"
+	else
+		codesign --force --sign - --timestamp=none "$bin"
+		echo "    repaired the ad-hoc signature"
+	fi
+
+	# Proves the thing actually runs, rather than just claiming it will.
+	echo "    $("$bin" --version)"
+}
+
+if [ "$#" -gt 0 ]; then
+	for bin in "$@"; do
+		if [ ! -e "$bin" ]; then
+			echo "error: nothing at $bin" >&2
+			exit 1
+		fi
+		unquarantine "$bin"
+	done
 else
-	echo "    no quarantine flag set"
+	found=
+	for name in prefixtool fabrictool; do
+		if [ -e "$dir/$name" ]; then
+			unquarantine "$dir/$name"
+			found="$found $dir/$name"
+		fi
+	done
+	if [ -z "$found" ]; then
+		echo "error: no binaries found next to $0" >&2
+		echo "usage: $0 [path-to-binary ...]" >&2
+		exit 1
+	fi
 fi
 
-chmod +x "$bin"
-
-# arm64 macOS kills a binary whose signature does not match its contents,
-# which looks like an unexplained "killed: 9" rather than a signing error.
-if codesign --verify --strict "$bin" >/dev/null 2>&1; then
-	echo "    signature is intact"
-else
-	codesign --force --sign - --timestamp=none "$bin"
-	echo "    repaired the ad-hoc signature"
-fi
-
-# Proves the whole thing actually runs, rather than just claiming it will.
 echo
-"$bin" --version
-echo
-echo "Ready. To put it on your PATH:"
-echo "    sudo mv \"$bin\" /usr/local/bin/prefixtool"
+echo "Ready. To put them on your PATH:"
+echo "    sudo mv \"$dir\"/prefixtool \"$dir\"/fabrictool /usr/local/bin/"

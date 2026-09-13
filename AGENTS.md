@@ -1,14 +1,20 @@
-# Working on prefixtool
+# Working on prefixtool and fabrictool
 
-A CLI that inspects, splits and carves IPv4 and IPv6 prefixes. The README
-covers what it does; this covers how to change it without breaking things that
-are easy to break here.
+This package builds two CLIs. `prefixtool` inspects, splits and carves IPv4
+and IPv6 prefixes, and `fabrictool` sizes the cabling between switches. The README
+covers what they do; this covers how to change them without breaking things
+that are easy to break here.
+
+They share `src/lib.rs` and nothing else. What is shared is how output looks -
+colour, the JSON writer, digit grouping - and that is deliberate: the two
+reports are meant to sit in the same terminal without looking like different
+programs, so a change to one of those modules is a change to both tools.
 
 ## Commands
 
 ```
 cargo build
-cargo test --locked --all-targets      # 180 tests: 118 unit, 62 end-to-end
+cargo test --locked --all-targets      # unit, CLI and end-to-end tests
 cargo clippy --locked --all-targets
 cargo fmt --all --check
 ```
@@ -27,7 +33,8 @@ script -qec "cargo test --locked --all-targets" /dev/null
 
 ## Dependencies
 
-`ipnet`, `clap`, `nom`. That is the whole list and it is deliberate.
+The dependencies are `ipnet`, `clap` and `nom`. That is the whole list, and
+it is deliberate.
 
 The colour handling, the JSON writer, the big-number formatting and the
 allocator are all hand-rolled because each would otherwise be a dependency
@@ -36,6 +43,9 @@ earning its keep only in a corner of one module. Terminal detection uses
 the repository, not a detail.
 
 ## Layout
+
+`src/main.rs` is prefixtool and `src/bin/fabrictool.rs` is fabrictool; both are
+thin, and everything either of them does lives in `src/lib.rs` behind them.
 
 | Module | Holds |
 | --- | --- |
@@ -49,14 +59,31 @@ the repository, not a detail.
 | `zones.rs` | Reverse DNS delegation zones, including RFC 2317 |
 | `json.rs` | A small JSON writer |
 
+The fabric side lives under `src/fabric/` and is the same shape one level
+down:
+
+| Module | Holds |
+| --- | --- |
+| `fabric/speed.rs` | Port and link rates, held in megabits per second |
+| `fabric/dsl.rs` | The fabric notation, hand-written |
+| `fabric/plan.rs` | Topology, ports, cables, transceivers and bandwidth |
+| `fabric/schedule.rs` | Which port on which switch reaches which |
+| `fabric/render.rs` | Text, `--quiet` and `--json` output |
+| `fabric/dot.rs` | A Graphviz drawing of the fabric |
+
+`num.rs`, `style.rs` and `json.rs` are the three modules both tools use. The
+fabric grammar is hand-written rather than parsed with nom because it has no
+ambiguity to resolve: the notation is a chain of tiers and links read left to
+right. Reach for nom there only if that stops being true.
+
 ## Conventions the tests enforce
 
 **Pad before styling.** An escape sequence has no printed width, but
 `format!("{:<width$}")` counts it anyway, so styling a value before padding it
 silently shifts every column after it - and looks fine in a plain-text test.
 `colour_never_changes_the_layout` asserts that stripping the escapes from a
-coloured report gives back the uncoloured one byte for byte. Extend it when
-adding a section.
+coloured report gives back the uncoloured one byte for byte. There is one of
+these per tool, and both matter. Extend the right one when adding a section.
 
 **Tests must not depend on their environment.** A colour test once asked the
 real stdout whether it was a terminal and asserted the answer was no. It
@@ -70,14 +97,20 @@ integers. `num::describe_sum` is for people, `num::sum_grouped` for machines.
 Indexes stay exact everywhere: an approximated index is a wrong answer rather
 than a rounded one.
 
-**`--quiet` and `--json` are for parsing.** Never coloured, whatever `--color`
-says. No truncation hints, no prose. `list` returns whether more was waiting so
+**`--quiet` and `--json` are for parsing.** They are never coloured, whatever
+`--color` says, and they carry no truncation hints and no prose. `list` returns whether more was waiting so
 that the human renderer can say so and the machine ones can ignore it.
 
-One prefix per line, with one exception: a `%a:b:c` ratio prints one line per
-share, space-separated, because a share can be several blocks and nothing
-about the blocks says how many. Those lines ignore `-n` - truncating one is a
+They print one prefix per line, with one exception. A `%a:b:c` ratio prints
+one line per share, space-separated, because a share can be several blocks and
+nothing about the blocks says how many. Those lines ignore `-n` - truncating one is a
 wrong answer rather than a short one.
+
+fabrictool's `--quiet` is a bill of materials, `quantity<TAB>item`, or the
+patch schedule when `--schedule` asked for one - never both at once. Two shapes of line
+in one stream is worse than either, and a reader piping it wants one of them.
+The item names are an interface: `transceiver-400G` and `breakout-1x4-400G`
+are what a script greps for, so treat renaming one as a breaking change.
 
 **Nothing prints the same addresses twice.** A carve lists what it left over,
 but `/N`, `%M` and `%a:b:c` each describe that same space themselves, so any
@@ -108,15 +141,78 @@ found real bugs when first written:
 - Filling from either end gives **mirror images**: `--from=top` reflects each
   allocation about the middle of the parent. Both the block chosen and the
   half taken when splitting down to it have to flip, and a test that only
-  checked one of those passes while allocations land at the wrong end.
+  checked one of those passes while allocations sit at the wrong end.
 
 When adding an operator, reach for the property first.
+
+The fabric side has three of its own, and the first two found real bugs:
+
+- Every link has two ends, and each end sits on exactly one switch: the sides'
+  degrees times their switch counts is **twice the link count**, in every
+  shape and at every size.
+- Lanes are provisioned in whole ports, so `ports x lanes` is always **used
+  plus spare**. A ports figure that forgets a remainder breaks this.
+- Every port a switch gives up is counted **once**: a side's total is its
+  fabric ports plus its server ports, and that total is what a port budget is
+  answered against.
+- The schedule and the plan are the **same fabric**: as many lines as the plan
+  counted links, as many ends on a switch as it counted ports, and no lane
+  plugged into twice.
+
+The last one is what keeps `plan.rs` and `schedule.rs` honest about a
+topology. They count it in completely different ways - one with arithmetic,
+one by walking it - and a shape whose two answers disagree is a bug in
+whichever was written second.
 
 A `%a:b:c` ratio can be inexact for two unrelated reasons, and the report has
 to say which: the ratio itself may not be cuttable from any prefix (`2:1` -
 two thirds of a prefix is not a prefix), or the ratio may be fine and the
 space no longer a single block. `Shares::ratio_is_dyadic` is the test that
 separates them.
+
+## What fabrictool assumes
+
+The counting is only as good as the model, and the model is small enough to
+state:
+
+- a switch has ports of one speed, and a link runs at the link speed;
+- a port carrying links slower than itself is broken out into lanes, one lane
+  per link end;
+- a breakout harness therefore fans one port out to several **different**
+  peers, which is the whole reason it exists.
+
+The arrangement falls out of that, and the arrangement decides the bill of
+materials. Where every switch is the same - a mesh or a ring - both ends of a
+link are lanes: they meet in a patch field, and the optics sit at the trunk
+ports. Where they are not - a star's hub, a leaf-spine's spines - the upstream
+end breaks out and everything below it gives up a whole port, which is the one
+arrangement a DAC or AOC splitter can be used in, because its lanes end in
+modules and a module needs a port. `Topology::is_uniform` is what that turns
+on, so a new shape decides its arrangement by answering that one question.
+
+That is why `:dac` with a broken-out mesh exits 3 rather than printing
+a plan. It is a real constraint, not a simplification, and the error names both
+ways round it.
+
+Servers are the other half of an oversubscription ratio, and three rules keep
+them honest:
+
+- they hang off the fabric's **edge** - `Shape::edge` - which is the leaves of
+  a leaf-spine, the spokes of a star, and every switch of a mesh or a ring;
+- their ports are the **same lane arithmetic** as the fabric's, because a 100G
+  port split four ways is four 25G servers exactly as a 400G port split four
+  ways is four 100G leaves;
+- the ratio is about the **servers**, not the ports they arrive on, so
+  breaking out the access side changes what it costs in ports and leaves the
+  ratio alone.
+
+What is deliberately not counted is the cabling to the servers. The ports are
+spent here and the ratio depends on them, but the cables and the NIC optics
+are bought with the servers rather than with the fabric, so the bill of
+materials stops at the leaf. What the model still does not cover is a switch
+with ports at two speeds *facing the fabric*, where a splitter could fan out
+into native ports in a mesh as well. Adding that means asking how many ports of
+each speed a switch has, which is a question the command line does not ask.
 
 ## Arithmetic traps
 
@@ -135,6 +231,30 @@ IPv6 sizes overflow the obvious types. Two cases have bitten and are covered:
 
 `num::Count` holds an exponent rather than a value for this reason.
 
+`fabrictool` holds its rates in megabits per second as a `u64` for a related
+reason: 2.5G is 2,500 and 1.6T is 1,600,000, so every rate anyone writes down
+divides into it exactly, and a float would put rounding error into counts that
+are meant to be exact. Anything finer than a megabit is refused rather than
+rounded.
+
+Switch counts are capped at 4,096 and parallel links at 64, which keeps the
+products - a mesh of 4,096 is 8,386,560 links - inside a `u64` with room to
+spare.
+
+## Drawing
+
+`--dot` is the third output mode, and the only one that shows the shape rather
+than counting it. One edge per pair of switches by default; with `--schedule`,
+one per cable, labelled with the ports at its ends. It is generated from the
+same `Links` iterator the schedule uses, stepped over the parallel links, so a
+drawing and a schedule can never disagree about what is connected to what.
+
+DOT labels are quoted strings in which `\n` is a line break, so each line of a
+node label is escaped on its own and joined afterwards - escaping the whole
+label would turn the separator into the literal characters. `dot -Tsvg` over
+the output is the check worth running after touching it; it is not in the test
+suite because the suite may not have Graphviz.
+
 ## Shell-facing details
 
 Operator sigils must survive an unquoted shell. `*` is a glob, which is why
@@ -144,7 +264,53 @@ bash and zsh. `~` is not, despite looking free: `~1` is directory-stack
 expansion in both shells.
 
 A new sigil has to be added to `looks_like_op` as well as to the grammar, or
-it will not survive being interleaved with flags.
+it will not survive being interleaved with flags. That applies to the prefix
+side, which is the one with sigil operators.
+
+**One argument says what the fabric is; the flags say what to print about
+it.** That line is absolute on the fabric side, and it is what replaced a
+positional count, five sigil operators and two flags that between them
+described the same thing three different ways. `--schedule`, `--dot`,
+`--json`, `-q`, `-n` and `--color` are about output and stay flags; nothing
+else is a flag.
+
+The notation is a chain of tiers, `N name[panel]`, joined by links, `-SPEED-`.
+It draws the hardware rather than describing it, which is why the spines come
+first: the chain runs from the core to the edge and carries on into the
+servers. Two tiers of switches are a leaf-spine and a `hub` over `spokes` is a
+star; one tier names the pattern its own switches are wired in, as `mesh` or
+`ring` on the far side of its link.
+
+**A panel belongs to the tier it is written on.** That is what makes a port
+budget a question about one kind of switch rather than about whatever matches
+a speed, and it is why the `:ROLE` suffix and the note that went with it are
+both gone: leaves and spines both at 100G used to make one question answer
+about both, and now each tier's panel is its own question. The heading names
+the tier, so a stack of them reads.
+
+**Lanes are never written down.** The port that carries a link is the smallest
+one at or above the link's speed, and the port being the faster of the two is
+what breaking out means. One rule covers both ends: a spine's 400G port
+carrying a 100G uplink, and a leaf's 100G port carrying 25G servers. A fabric
+with no speeds at all has nothing to break out and counts cables. A panel with
+no port big enough for its link is refused, and the message lists what the
+switch does have.
+
+A leaf-spine with one tier of spines is all this plans. Three tiers of
+switches is a super-spine layer, and the notation can write one, so it says
+what it is and suggests the two runs that answer it rather than failing
+obscurely.
+
+`Role` lives in `fabric/mod.rs` alongside `Topology` and `Media` rather than
+in `plan.rs`, because the notation has to name one, and a parser reaching into
+the planner for its vocabulary is the wrong way round.
+
+A leaf-spine with no count is **a pair of spines**, not one, because that is
+how a rack is built: one spine is a single point of failure rather than a
+smaller fabric, and saying so is what the caution is for. The pair is also
+why `spine_loss` exists - a leaf keeps its other uplink when a spine goes, at
+twice the oversubscription, and that degraded ratio is the number somebody
+decides two spines is enough on.
 
 `:` is doing double duty, as the separator in `%a:b:c` and as the start of a
 carve's name, and IPv6 addresses are mostly colons. Two rules keep it
@@ -153,11 +319,17 @@ the *first* one starts a name there; and `-<prefix>` tries the whole payload
 as an address before splitting anything off, so `-2001:db8::1` stays an
 address rather than becoming `2001:db8:` named `1`.
 
-Flags and operators may be interleaved. `arrange()` in `main.rs` partitions
-argv before clap sees it, because clap would otherwise swallow `--json` into
-the operator list.
+Flags and operators may be interleaved on the prefix side. `arrange()` in
+`main.rs` partitions argv before clap sees it, because clap would otherwise
+swallow `--json` into the operator list. fabrictool needs none of that: its
+fabric is a single quoted argument, so clap tells it from the flags itself.
 
 ## Releasing
+
+Both binaries ship in one archive, still named after `prefixtool`, and the
+release workflow builds, signs, smoke-tests and packages every binary in
+`BINS`. A third one would go in that list, in `scripts/update-formula.sh`'s
+`bin.install`, and in `scripts/macos-unquarantine.sh`.
 
 `Cargo.toml` is the only place a version lives. The flake reads it with
 `fromTOML`; the Homebrew formula is generated from it.
@@ -172,6 +344,30 @@ the version is ignored, so Dependabot's manifest updates are safe.
 
 Versions below `1.0.0`, and any with a suffix, publish as pre-releases.
 
+## Prose
+
+**Every sentence has a subject and a verb.** The colon is not what makes a
+fragment wrong; the missing subject is. All of these need rewriting, whatever
+punctuation they carry:
+
+- "Deliberately not counted: the cabling to the servers."
+- "Same twenty-eight links, but sixteen transceivers."
+- "One edge per pair, labelled with what runs between them."
+- "Gone. Fixed. Done."
+
+Write "The bill of materials stops at the leaf" instead. Dropping the subject
+for emphasis reads as a tic rather than as economy, and it reads that way
+whether the sentence is in the README, in this file, in the help text, in a
+commit message, in a pull request, or in a comment that explains something.
+
+An imperative keeps its implied subject and is fine: "Run the suite through a
+pty as well as a pipe."
+
+The rule covers prose. It does not cover labels, which are noun phrases
+because that is what a label is: the summary line of a doc comment
+(`/// The shape of the fabric`), a `clap` flag description, a field value in
+the report, a column heading, a table cell.
+
 ## Documentation
 
 README examples are generated from the binary and diffed against it, not
@@ -181,4 +377,7 @@ confirm it matches:
 ```
 diff <(./target/debug/prefixtool 2001::/64 --color=never) \
      <(sed -n '/^\$ prefixtool 2001::\/64$/,/^```$/p' README.md | sed '1d;$d')
+
+diff <(./target/debug/fabrictool '8 switches -100G- mesh' --color=never) \
+     <(sed -n "/^\$ fabrictool '8 switches -100G- mesh'$/,/^\`\`\`$/p" README.md | sed '1d;$d')
 ```

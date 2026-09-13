@@ -11,7 +11,7 @@ pub struct Info {
     pub given: Option<String>,
     pub net: IpNet,
     pub addresses: Count,
-    /// IPv4 only: usable host addresses and the range they span.
+    /// Usable host addresses and the range they span, for IPv4 only.
     pub hosts: Option<Hosts>,
     pub reverse: Reverse,
     pub specials: Vec<Match>,

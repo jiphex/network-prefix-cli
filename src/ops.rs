@@ -133,7 +133,8 @@ pub fn parse(token: &str) -> Result<Op, String> {
     }
 }
 
-/// The grammar proper: a sigil, then a payload whose shape the sigil chooses.
+/// The grammar proper, which is a sigil followed by a payload whose shape the
+/// sigil chooses.
 ///
 /// `-` and `+` each accept either a prefix or a number. The prefix branch is
 /// tried first and fails silently when the payload is not an address, which is
@@ -215,7 +216,7 @@ fn exclude(input: &'_ str) -> R<'_, Op> {
 }
 
 /// Names go in a report and in JSON, so they are kept to something that needs
-/// no quoting or escaping anywhere it lands.
+/// no quoting or escaping wherever it is typed.
 fn check_label(s: &str) -> Result<String, String> {
     if s.is_empty() {
         return Err("a name after ':' cannot be empty".into());
@@ -231,8 +232,9 @@ fn check_label(s: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
-/// A prefix, or nothing. Deliberately silent on failure: this is one arm of an
-/// `alt` whose other arm has the better complaint when the payload is a number.
+/// A prefix, or nothing. It stays silent on failure because it is one arm of
+/// an `alt` whose other arm has the better complaint when the payload is a
+/// number.
 fn network(input: &'_ str) -> R<'_, IpNet> {
     map_opt(rest, |s: &str| parse_net(s).ok()).parse(input)
 }
